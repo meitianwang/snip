@@ -25,17 +25,18 @@ final class FloatingPreview {
 
         let margin: CGFloat = 24
         let visible = screen.visibleFrame
-        let finalOrigin = NSPoint(
-            x: visible.maxX - thumbSize.width - padding * 2 - margin,
-            y: visible.minY + margin
+        let panelSize = NSSize(width: thumbSize.width + padding * 2, height: thumbSize.height + padding * 2)
+        let finalRect = NSRect(
+            x: visible.maxX - panelSize.width - margin,
+            y: visible.minY + margin,
+            width: panelSize.width,
+            height: panelSize.height
         )
-        let contentRect = NSRect(
-            origin: NSPoint(x: visible.maxX, y: finalOrigin.y), // 从右侧屏幕外滑入
-            size: NSSize(width: thumbSize.width + padding * 2, height: thumbSize.height + padding * 2)
-        )
+        // 初始位置只向右偏移 16pt（仍在屏内），靠 alpha 淡入 + 轻微滑动
+        let startRect = finalRect.offsetBy(dx: 16, dy: 0)
 
         let panel = NSPanel(
-            contentRect: contentRect,
+            contentRect: startRect,
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
@@ -48,7 +49,7 @@ final class FloatingPreview {
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
 
         let view = PreviewThumbView(
-            frame: NSRect(origin: .zero, size: contentRect.size),
+            frame: NSRect(origin: .zero, size: startRect.size),
             image: NSImage(cgImage: image, size: pointSize),
             fileURL: fileURL,
             padding: padding
@@ -59,14 +60,16 @@ final class FloatingPreview {
             AppState.shared.openEditor(image: image, scale: scale, fileURL: fileURL)
         }
         panel.contentView = view
+        panel.alphaValue = 0
         panel.orderFrontRegardless()
         self.panel = panel
 
-        // 滑入
+        // 淡入 + 轻微左滑（alphaValue/setFrame 是 NSWindow 官方可动画属性）
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.25
             context.timingFunction = CAMediaTimingFunction(name: .easeOut)
-            panel.animator().setFrameOrigin(NSPoint(x: finalOrigin.x, y: finalOrigin.y))
+            panel.animator().alphaValue = 1
+            panel.animator().setFrame(finalRect, display: true)
         }
         view.startDismissTimer()
     }
@@ -74,15 +77,15 @@ final class FloatingPreview {
     func dismiss(animated: Bool) {
         guard let panel else { return }
         self.panel = nil
-        guard animated, let screen = panel.screen ?? NSScreen.main else {
+        guard animated else {
             panel.orderOut(nil)
             return
         }
         NSAnimationContext.runAnimationGroup({ context in
             context.duration = 0.2
             context.timingFunction = CAMediaTimingFunction(name: .easeIn)
-            panel.animator().setFrameOrigin(NSPoint(x: screen.visibleFrame.maxX, y: panel.frame.minY))
             panel.animator().alphaValue = 0
+            panel.animator().setFrame(panel.frame.offsetBy(dx: 16, dy: 0), display: true)
         }, completionHandler: {
             panel.orderOut(nil)
         })
