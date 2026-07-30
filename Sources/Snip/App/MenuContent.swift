@@ -19,6 +19,11 @@ struct MenuContent: View {
         }
         .keyboardShortcut("0", modifiers: [.shift, .command])
 
+        Button("OCR 取字") {
+            AppState.shared.startTextCapture()
+        }
+        .keyboardShortcut("9", modifiers: [.shift, .command])
+
         Divider()
 
         Toggle("自动复制到剪贴板", isOn: $settings.copyToClipboard)

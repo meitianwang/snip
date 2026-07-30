@@ -9,7 +9,8 @@ final class OverlayWindow: NSWindow {
         screen: NSScreen,
         frozenImage: CGImage,
         pickableWindows: [(window: SCWindow, rect: NSRect)],
-        mode: CaptureMode
+        mode: CaptureMode,
+        purpose: CapturePurpose
     ) {
         selectionView = SelectionView(
             frame: NSRect(origin: .zero, size: screen.frame.size),
@@ -17,6 +18,7 @@ final class OverlayWindow: NSWindow {
             screenScale: screen.backingScaleFactor,
             pickableWindows: pickableWindows
         )
+        selectionView.purpose = purpose
         selectionView.mode = mode
 
         super.init(

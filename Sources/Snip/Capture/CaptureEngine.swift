@@ -66,6 +66,12 @@ enum CaptureMode {
     case window
 }
 
+/// 区域截取的用途：普通截图 / OCR 取字
+enum CapturePurpose {
+    case image
+    case text
+}
+
 extension NSScreen {
     var displayID: CGDirectDisplayID? {
         deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID

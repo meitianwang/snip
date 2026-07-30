@@ -11,6 +11,7 @@ final class AppState: ObservableObject {
 
     private var overlayWindows: [OverlayWindow] = []
     private var editors: [EditorWindowController] = []
+    private var ocrWindows: [OCRResultWindowController] = []
 
     private init() {}
 
@@ -38,14 +39,18 @@ final class AppState: ObservableObject {
 
     func startRegionCapture() { startInteractiveCapture(mode: .region) }
     func startWindowCapture() { startInteractiveCapture(mode: .window) }
+    /// OCR 取字：框选 → 识别 → 文字进剪贴板
+    func startTextCapture() { startInteractiveCapture(mode: .region, purpose: .text) }
 
     private var currentMode: CaptureMode = .region
+    private var currentPurpose: CapturePurpose = .image
 
-    private func startInteractiveCapture(mode: CaptureMode) {
+    private func startInteractiveCapture(mode: CaptureMode, purpose: CapturePurpose = .image) {
         guard !isCapturing else { return }
         guard ensurePermissionWithGuidance() else { return }
         isCapturing = true
         currentMode = mode
+        currentPurpose = purpose
 
         Task {
             do {
@@ -65,7 +70,8 @@ final class AppState: ObservableObject {
                         screen: screen,
                         frozenImage: frozen,
                         pickableWindows: windowRects,
-                        mode: mode
+                        mode: mode,
+                        purpose: purpose
                     )
                     configureCallbacks(for: overlay)
                     windows.append(overlay)
@@ -102,6 +108,12 @@ final class AppState: ObservableObject {
                 Toast.show("已复制 \(hex)")
             }
         }
+        overlay.selectionView.onRecognizeText = { [weak self] image in
+            Task { @MainActor in
+                // 保留覆盖层：结果窗口浮在选区之上，方便对照原文校对
+                self?.recognizeAndShowResult(from: image)
+            }
+        }
     }
 
     private func toggleMode() {
@@ -128,8 +140,42 @@ final class AppState: ObservableObject {
     }
 
     private func finishRegionCapture(_ image: CGImage, scale: CGFloat) {
-        dismissOverlays()
-        deliverWithPreview(image, scale: scale)
+        if currentPurpose == .text {
+            // OCR：不关覆盖层，弹窗悬浮在选区上方供校对，Esc 退出
+            recognizeAndShowResult(from: image)
+        } else {
+            dismissOverlays()
+            deliverWithPreview(image, scale: scale)
+        }
+    }
+
+    /// OCR：识别后弹窗展示，可编辑/选择/一键复制
+    private func recognizeAndShowResult(from image: CGImage) {
+        Task {
+            do {
+                let text = try await TextRecognizer.recognize(image)
+                guard !text.isEmpty else {
+                    Toast.show("未识别到文字")
+                    return
+                }
+                openOCRResult(text: text)
+            } catch {
+                NSLog("Snip: OCR 失败 \(error)")
+                Toast.show("文字识别失败")
+            }
+        }
+    }
+
+    private func openOCRResult(text: String) {
+        let controller = OCRResultWindowController(text: text)
+        controller.onClose = { [weak self, weak controller] in
+            guard let controller else { return }
+            self?.ocrWindows.removeAll { $0 === controller }
+        }
+        // 覆盖层还在时抬到其上，否则普通层级
+        controller.setFloatsAboveCapture(!overlayWindows.isEmpty)
+        ocrWindows.append(controller)
+        controller.show()
     }
 
     private func finishWindowCapture(_ window: SCWindow) {
@@ -164,6 +210,8 @@ final class AppState: ObservableObject {
         overlayWindows.forEach { $0.orderOut(nil) }
         overlayWindows.removeAll()
         isCapturing = false
+        // 覆盖层没了，OCR 结果窗口降回普通层级
+        ocrWindows.forEach { $0.setFloatsAboveCapture(false) }
     }
 
     // MARK: - 标注器

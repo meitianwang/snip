@@ -12,6 +12,7 @@ final class OverlayToolbarModel: ObservableObject {
     var onUndo: () -> Void = {}
     var onCancel: () -> Void = {}
     var onConfirm: () -> Void = {}
+    var onOCR: () -> Void = {}
 }
 
 /// 框选完成后出现在选区旁的工具条：标注工具 + 颜色 + 撤销 + ✕/✓。
@@ -81,6 +82,18 @@ struct OverlayToolbar: View {
             }
             .buttonStyle(.plain)
             .help("取色 (C)：点击像素复制色值")
+
+            // OCR：识别选区内文字，弹窗展示结果
+            Button {
+                model.onOCR()
+            } label: {
+                Image(systemName: "text.viewfinder")
+                    .font(.system(size: 12, weight: .medium))
+                    .frame(width: 28, height: 24)
+                    .foregroundStyle(.white.opacity(0.85))
+            }
+            .buttonStyle(.plain)
+            .help("识别选区文字 (OCR)")
 
             Divider().frame(height: 16).overlay(.white.opacity(0.3))
 

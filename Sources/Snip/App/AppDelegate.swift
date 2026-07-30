@@ -19,5 +19,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         HotkeyManager.shared.register(keyCode: UInt32(kVK_ANSI_0), modifiers: cmdShift) {
             Task { @MainActor in AppState.shared.captureFullScreen() }
         }
+        // OCR 取字
+        HotkeyManager.shared.register(keyCode: UInt32(kVK_ANSI_9), modifiers: cmdShift) {
+            Task { @MainActor in AppState.shared.startTextCapture() }
+        }
     }
 }

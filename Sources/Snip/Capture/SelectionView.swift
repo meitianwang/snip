@@ -12,6 +12,11 @@ final class SelectionView: NSView {
     var onModeToggle: (() -> Void)?
     /// 取色完成（色值已入剪贴板），由外部关闭覆盖层并提示
     var onColorPicked: ((String) -> Void)?
+    /// OCR：交付选区裁切图，由外部识别并展示结果
+    var onRecognizeText: ((CGImage) -> Void)?
+
+    /// 截取用途：OCR 模式下框选即识别，不进标注阶段
+    var purpose: CapturePurpose = .image
 
     var mode: CaptureMode = .region {
         didSet {
@@ -198,6 +203,21 @@ final class SelectionView: NSView {
                 needsDisplay = true
                 return
             }
+            if purpose == .text {
+                // OCR：框选即交付裁切图，不进标注阶段
+                let pixelRect = CGRect(
+                    x: selectionRect.minX * screenScale,
+                    y: (bounds.height - selectionRect.maxY) * screenScale,
+                    width: selectionRect.width * screenScale,
+                    height: selectionRect.height * screenScale
+                ).integral
+                if let cropped = frozenImage.cropping(to: pixelRect) {
+                    onComplete?(cropped, screenScale)
+                } else {
+                    onCancel?()
+                }
+                return
+            }
             // 框选完成 → 进入就地标注阶段，等待 ✓ 确认
             enterAnnotationPhase()
         }
@@ -213,6 +233,7 @@ final class SelectionView: NSView {
         model.onUndo = { [weak self] in self?.undoAnnotation() }
         model.onCancel = { [weak self] in self?.onCancel?() }
         model.onConfirm = { [weak self] in self?.confirmAnnotatedCapture() }
+        model.onOCR = { [weak self] in self?.performOCR() }
         toolbarModel = model
         // 工具/取色模式切换时重绘（如放大镜显隐）
         toolbarCancellable = model.objectWillChange
@@ -256,6 +277,21 @@ final class SelectionView: NSView {
         pasteboard.setString(hex, forType: .string)
         toolbarModel?.isPickingColor = false
         Toast.show("已复制 \(hex)")
+    }
+
+    /// 工具条 OCR：裁切选区原图（不含标注）交给识别
+    private func performOCR() {
+        guard phase == .annotating else { return }
+        commitTextEditorIfNeeded()
+        let pixelRect = CGRect(
+            x: selectionRect.minX * screenScale,
+            y: (bounds.height - selectionRect.maxY) * screenScale,
+            width: selectionRect.width * screenScale,
+            height: selectionRect.height * screenScale
+        ).integral
+        if let cropped = frozenImage.cropping(to: pixelRect) {
+            onRecognizeText?(cropped)
+        }
     }
 
     private func undoAnnotation() {
@@ -635,7 +671,8 @@ final class SelectionView: NSView {
     private func drawHint(in ctx: CGContext) {
         // 拖拽中/标注阶段不显示顶部提示，减少干扰
         guard startPoint == nil, phase == .selecting else { return }
-        let text = (mode == .region ? "拖拽选取区域  ·  C 取色" : "点击选取窗口") + "  ·  Space 切换  ·  Esc 取消" as NSString
+        let action = purpose == .text ? "框选识别文字" : "拖拽选取区域  ·  C 取色"
+        let text = (mode == .region ? action : "点击选取窗口") + "  ·  Space 切换  ·  Esc 取消" as NSString
         let attributes: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: 12, weight: .medium),
             .foregroundColor: NSColor.white.withAlphaComponent(0.85),
