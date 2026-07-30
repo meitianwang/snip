@@ -94,6 +94,12 @@ final class AppState: ObservableObject {
         overlay.selectionView.onModeToggle = { [weak self] in
             Task { @MainActor in self?.toggleMode() }
         }
+        overlay.selectionView.onColorPicked = { [weak self] hex in
+            Task { @MainActor in
+                self?.dismissOverlays()
+                Toast.show("已复制 \(hex)")
+            }
+        }
     }
 
     private func toggleMode() {

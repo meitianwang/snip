@@ -8,6 +8,8 @@ final class SelectionView: NSView {
     var onWindowPick: ((SCWindow) -> Void)?
     var onCancel: (() -> Void)?
     var onModeToggle: (() -> Void)?
+    /// 取色完成（色值已入剪贴板），由外部关闭覆盖层并提示
+    var onColorPicked: ((String) -> Void)?
 
     var mode: CaptureMode = .region {
         didSet {
@@ -27,8 +29,6 @@ final class SelectionView: NSView {
     private var selectionRect: NSRect = .zero
     private var mouseLocation: NSPoint = .zero
     private var hoveredWindow: (window: SCWindow, rect: NSRect)?
-    /// 取色后的短暂反馈文案（“已复制 #FF6B35”）
-    private var copyFeedback: String?
 
     init(
         frame: NSRect,
@@ -70,7 +70,7 @@ final class SelectionView: NSView {
         }
     }
 
-    /// 取色：光标像素颜色写入剪贴板，屏幕轻提示
+    /// 取色：光标像素颜色写入剪贴板，本次截取即完成
     private func copyColorUnderCursor() {
         guard mode == .region else { return }
         let px = Int(floor(mouseLocation.x * screenScale))
@@ -81,13 +81,7 @@ final class SelectionView: NSView {
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.setString(hex, forType: .string)
-
-        copyFeedback = "已复制 \(hex)"
-        needsDisplay = true
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
-            self?.copyFeedback = nil
-            self?.needsDisplay = true
-        }
+        onColorPicked?(hex)
     }
 
     override func resetCursorRects() {
@@ -174,7 +168,6 @@ final class SelectionView: NSView {
         }
 
         drawHint(in: ctx)
-        drawCopyFeedback(in: ctx)
     }
 
     private func drawRegionMode(in ctx: CGContext) {
@@ -367,39 +360,6 @@ final class SelectionView: NSView {
         )
         ctx.addPath(path)
         ctx.setFillColor(CGColor(gray: 0, alpha: 0.55))
-        ctx.fillPath()
-        text.draw(
-            at: NSPoint(x: labelRect.midX - textSize.width / 2, y: labelRect.midY - textSize.height / 2),
-            withAttributes: attributes
-        )
-    }
-
-    /// 取色成功的轻提示（光标上方胶囊）
-    private func drawCopyFeedback(in ctx: CGContext) {
-        guard let feedback = copyFeedback else { return }
-        let text = feedback as NSString
-        let attributes: [NSAttributedString.Key: Any] = [
-            .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .semibold),
-            .foregroundColor: NSColor.white,
-        ]
-        let textSize = text.size(withAttributes: attributes)
-        var labelRect = NSRect(
-            x: mouseLocation.x - textSize.width / 2 - 12,
-            y: mouseLocation.y + 28,
-            width: textSize.width + 24,
-            height: textSize.height + 12
-        )
-        // 贴边修正
-        labelRect.origin.x = max(bounds.minX + 8, min(labelRect.origin.x, bounds.maxX - labelRect.width - 8))
-        labelRect.origin.y = min(labelRect.origin.y, bounds.maxY - labelRect.height - 8)
-
-        let path = CGPath(
-            roundedRect: labelRect,
-            cornerWidth: labelRect.height / 2, cornerHeight: labelRect.height / 2,
-            transform: nil
-        )
-        ctx.addPath(path)
-        ctx.setFillColor(CGColor(red: 0.15, green: 0.55, blue: 0.25, alpha: 0.92))
         ctx.fillPath()
         text.draw(
             at: NSPoint(x: labelRect.midX - textSize.width / 2, y: labelRect.midY - textSize.height / 2),
