@@ -30,7 +30,8 @@ enum Toast {
             backing: .buffered,
             defer: false
         )
-        panel.level = .statusBar
+        // 高于截取覆盖层(.screenSaver)，保证标注阶段取色时也可见
+        panel.level = NSWindow.Level(rawValue: NSWindow.Level.screenSaver.rawValue + 1)
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = false

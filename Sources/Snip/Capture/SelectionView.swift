@@ -1,8 +1,10 @@
 import AppKit
+import Combine
 import ScreenCaptureKit
+import SwiftUI
 
 /// 选区交互视图：冻结帧铺底 + 挖洞遮罩 + 放大镜 + 窗口高亮。
-/// 两种模式：region(拖拽选区) / window(悬停点选窗口)，Space 切换。
+/// 区域模式两阶段：拖拽框选 → 就地标注（工具条 + ✓ 确认）。
 final class SelectionView: NSView {
     var onComplete: ((CGImage, CGFloat) -> Void)?
     var onWindowPick: ((SCWindow) -> Void)?
@@ -32,6 +34,23 @@ final class SelectionView: NSView {
     private var selectionRect: NSRect = .zero
     private var mouseLocation: NSPoint = .zero
     private var hoveredWindow: (window: SCWindow, rect: NSRect)?
+
+    // MARK: 标注阶段状态
+
+    private enum Phase { case selecting, annotating }
+    private var phase: Phase = .selecting
+    private var annotations: [AnnotationElement] = []
+    private var annotationUndoStack: [[AnnotationElement]] = []
+    private var inProgress: AnnotationElement?
+    private var dragAnchor: NSPoint?
+    private var toolbarModel: OverlayToolbarModel?
+    private var toolbarHost: NSView?
+    private var toolbarCancellable: AnyCancellable?
+    private var textEditor: NSTextField?
+    private var editingElementID: UUID?
+    /// 马赛克底图惰性生成
+    private lazy var pixellatedFrozen: CGImage? =
+        AnnotationRenderer.makePixellatedImage(from: frozenImage, scale: screenScale)
 
     init(
         frame: NSRect,
@@ -65,15 +84,34 @@ final class SelectionView: NSView {
     }
 
     override func keyDown(with event: NSEvent) {
+        // ⌘Z 撤销标注
+        if event.modifierFlags.contains(.command),
+           event.charactersIgnoringModifiers?.lowercased() == "z" {
+            undoAnnotation()
+            return
+        }
         switch event.keyCode {
         case 53: // Esc
             onCancel?()
-        case 49: // Space
+        case 49 where phase == .selecting: // Space
             onModeToggle?()
-        case 8: // C：复制光标处像素颜色
-            copyColorUnderCursor()
+        case 36, 76: // 回车：确认完成
+            if phase == .annotating { confirmAnnotatedCapture() }
+        case 8: // C：取色
+            if phase == .selecting {
+                copyColorUnderCursor() // 选择阶段：取色即结束本次截取
+            } else {
+                pickColorAndStay(at: mouseLocation) // 标注阶段：取色不打断标注
+            }
         default:
-            super.keyDown(with: event)
+            // 标注阶段 R/O/A/T/P/M 切换工具
+            if phase == .annotating,
+               let char = event.charactersIgnoringModifiers?.lowercased().first,
+               let tool = AnnotationTool.allCases.first(where: { $0.shortcutKey == char }) {
+                toolbarModel?.tool = tool
+            } else {
+                super.keyDown(with: event)
+            }
         }
     }
 
@@ -117,13 +155,23 @@ final class SelectionView: NSView {
 
     override func mouseDown(with event: NSEvent) {
         guard mode == .region else { return }
-        startPoint = convert(event.locationInWindow, from: nil)
+        let point = convert(event.locationInWindow, from: nil)
+        if phase == .annotating {
+            annotationMouseDown(at: point)
+            return
+        }
+        startPoint = point
         selectionRect = .zero
     }
 
     override func mouseDragged(with event: NSEvent) {
-        guard mode == .region, let start = startPoint else { return }
+        guard mode == .region else { return }
         mouseLocation = convert(event.locationInWindow, from: nil)
+        if phase == .annotating {
+            annotationMouseDragged(to: mouseLocation)
+            return
+        }
+        guard let start = startPoint else { return }
         selectionRect = NSRect(
             x: min(start.x, mouseLocation.x),
             y: min(start.y, mouseLocation.y),
@@ -140,24 +188,249 @@ final class SelectionView: NSView {
                 onWindowPick?(hovered.window)
             }
         case .region:
+            if phase == .annotating {
+                annotationMouseUp()
+                return
+            }
             defer { startPoint = nil }
             guard selectionRect.width >= 2, selectionRect.height >= 2 else {
                 selectionRect = .zero
                 needsDisplay = true
                 return
             }
-            // 视图坐标(原点左下) -> 图像像素坐标(原点左上)
-            let pixelRect = CGRect(
-                x: selectionRect.minX * screenScale,
-                y: (bounds.height - selectionRect.maxY) * screenScale,
-                width: selectionRect.width * screenScale,
-                height: selectionRect.height * screenScale
-            ).integral
+            // 框选完成 → 进入就地标注阶段，等待 ✓ 确认
+            enterAnnotationPhase()
+        }
+    }
+
+    // MARK: - 标注阶段
+
+    private func enterAnnotationPhase() {
+        phase = .annotating
+        window?.makeFirstResponder(self)
+
+        let model = OverlayToolbarModel()
+        model.onUndo = { [weak self] in self?.undoAnnotation() }
+        model.onCancel = { [weak self] in self?.onCancel?() }
+        model.onConfirm = { [weak self] in self?.confirmAnnotatedCapture() }
+        toolbarModel = model
+        // 工具/取色模式切换时重绘（如放大镜显隐）
+        toolbarCancellable = model.objectWillChange
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.needsDisplay = true }
+
+        let host = NSHostingView(rootView: OverlayToolbar(model: model))
+        addSubview(host)
+        toolbarHost = host
+        layoutToolbar()
+        needsDisplay = true
+    }
+
+    /// 工具条跟随选区：优先下方，其次上方，再其次选区内部
+    private func layoutToolbar() {
+        guard let host = toolbarHost else { return }
+        let size = host.fittingSize
+        var origin = NSPoint(
+            x: selectionRect.maxX - size.width,
+            y: selectionRect.minY - size.height - 8
+        )
+        if origin.y < bounds.minY + 8 {
+            origin.y = selectionRect.maxY + 8
+        }
+        if origin.y + size.height > bounds.maxY - 8 {
+            origin.y = selectionRect.minY + 8
+        }
+        origin.x = max(bounds.minX + 8, min(origin.x, bounds.maxX - size.width - 8))
+        host.frame = NSRect(origin: origin, size: size)
+    }
+
+    /// 标注阶段取色：色值入剪贴板 + 轻提示，不结束截取、不丢标注
+    private func pickColorAndStay(at point: NSPoint) {
+        let px = Int(floor(point.x * screenScale))
+        let py = Int(floor((bounds.height - point.y) * screenScale))
+        guard px >= 0, py >= 0, px < frozenImage.width, py < frozenImage.height else { return }
+        let hex = pixelColor(atX: px, y: py)
+        guard hex.hasPrefix("#") else { return }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(hex, forType: .string)
+        toolbarModel?.isPickingColor = false
+        Toast.show("已复制 \(hex)")
+    }
+
+    private func undoAnnotation() {
+        guard phase == .annotating, let last = annotationUndoStack.popLast() else { return }
+        annotations = last
+        needsDisplay = true
+    }
+
+    private func annotationMouseDown(at point: NSPoint) {
+        commitTextEditorIfNeeded()
+        // 吸管取色模式：点击即取色，不画元素
+        if toolbarModel?.isPickingColor == true {
+            pickColorAndStay(at: point)
+            return
+        }
+        guard let tool = toolbarModel?.tool else { return }
+        let color = toolbarModel?.color ?? .systemRed
+
+        if tool == .text {
+            beginTextEditing(at: point, color: color)
+            return
+        }
+        var element = AnnotationElement(tool: tool, color: color)
+        switch tool {
+        case .rect, .ellipse, .mosaic:
+            element.rect = NSRect(origin: point, size: .zero)
+        case .arrow:
+            element.points = [point, point]
+        case .pen:
+            element.points = [point]
+        case .text:
+            break
+        }
+        dragAnchor = point
+        inProgress = element
+    }
+
+    private func annotationMouseDragged(to point: NSPoint) {
+        guard var element = inProgress else { return }
+        switch element.tool {
+        case .rect, .ellipse, .mosaic:
+            let start = dragAnchor ?? element.rect.origin
+            element.rect = NSRect(
+                x: min(start.x, point.x),
+                y: min(start.y, point.y),
+                width: abs(point.x - start.x),
+                height: abs(point.y - start.y)
+            )
+        case .arrow:
+            element.points[1] = point
+        case .pen:
+            element.points.append(point)
+        case .text:
+            break
+        }
+        inProgress = element
+        needsDisplay = true
+    }
+
+    private func annotationMouseUp() {
+        defer {
+            inProgress = nil
+            dragAnchor = nil
+            needsDisplay = true
+        }
+        guard let element = inProgress else { return }
+        let meaningful: Bool = switch element.tool {
+        case .pen: element.points.count >= 2
+        case .arrow: hypot(
+            element.points[1].x - element.points[0].x,
+            element.points[1].y - element.points[0].y
+        ) >= 4
+        default: element.rect.width >= 6 && element.rect.height >= 6
+        }
+        if meaningful {
+            annotationUndoStack.append(annotations)
+            annotations.append(element)
+        }
+    }
+
+    // MARK: 文字内联编辑
+
+    private func beginTextEditing(at point: NSPoint, color: NSColor) {
+        var element = AnnotationElement(tool: .text, color: color)
+        element.rect = NSRect(origin: point, size: .zero)
+        annotationUndoStack.append(annotations)
+        annotations.append(element)
+        editingElementID = element.id
+
+        let field = NSTextField(frame: NSRect(x: point.x, y: point.y - 4, width: 220, height: element.fontSize + 10))
+        field.font = NSFont.systemFont(ofSize: element.fontSize, weight: .semibold)
+        field.textColor = color
+        field.backgroundColor = NSColor.white.withAlphaComponent(0.6)
+        field.isBordered = false
+        field.focusRingType = .none
+        field.placeholderString = "输入文字…"
+        field.target = self
+        field.action = #selector(textEditingCommitted)
+        addSubview(field)
+        window?.makeFirstResponder(field)
+        textEditor = field
+    }
+
+    @objc private func textEditingCommitted() {
+        commitTextEditorIfNeeded()
+    }
+
+    private func commitTextEditorIfNeeded() {
+        guard let field = textEditor, let id = editingElementID else { return }
+        let text = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let index = annotations.firstIndex(where: { $0.id == id }) {
+            if text.isEmpty {
+                annotations.remove(at: index)
+                _ = annotationUndoStack.popLast()
+            } else {
+                annotations[index].text = text
+            }
+        }
+        field.removeFromSuperview()
+        textEditor = nil
+        editingElementID = nil
+        window?.makeFirstResponder(self)
+        needsDisplay = true
+    }
+
+    // MARK: 合成确认
+
+    /// ✓：冻结帧 + 标注全分辨率合成，裁切选区后交付
+    private func confirmAnnotatedCapture() {
+        guard phase == .annotating else { return }
+        commitTextEditorIfNeeded()
+
+        let pixelRect = CGRect(
+            x: selectionRect.minX * screenScale,
+            y: (bounds.height - selectionRect.maxY) * screenScale,
+            width: selectionRect.width * screenScale,
+            height: selectionRect.height * screenScale
+        ).integral
+
+        // 无标注直接裁切，免去重绘成本
+        if annotations.isEmpty {
             if let cropped = frozenImage.cropping(to: pixelRect) {
                 onComplete?(cropped, screenScale)
             } else {
                 onCancel?()
             }
+            return
+        }
+
+        guard let ctx = CGContext(
+            data: nil,
+            width: frozenImage.width,
+            height: frozenImage.height,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: CGColorSpace(name: CGColorSpace.sRGB)!,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else {
+            onCancel?()
+            return
+        }
+        ctx.draw(frozenImage, in: CGRect(x: 0, y: 0, width: frozenImage.width, height: frozenImage.height))
+        ctx.scaleBy(x: screenScale, y: screenScale)
+        let nsContext = NSGraphicsContext(cgContext: ctx, flipped: false)
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = nsContext
+        for element in annotations {
+            AnnotationRenderer.render(element, in: ctx, pixellatedImage: pixellatedFrozen, canvasSize: bounds.size)
+        }
+        NSGraphicsContext.restoreGraphicsState()
+
+        if let full = ctx.makeImage(), let cropped = full.cropping(to: pixelRect) {
+            onComplete?(cropped, screenScale)
+        } else {
+            onCancel?()
         }
     }
 
@@ -185,13 +458,27 @@ final class SelectionView: NSView {
         ctx.fillPath(using: .evenOdd)
 
         if !selectionRect.isEmpty {
+            // 标注阶段：已画元素 + 进行中元素，裁剪到选区内
+            if phase == .annotating {
+                ctx.saveGState()
+                ctx.clip(to: selectionRect)
+                for element in annotations where element.id != editingElementID {
+                    AnnotationRenderer.render(element, in: ctx, pixellatedImage: pixellatedFrozen, canvasSize: bounds.size)
+                }
+                if let element = inProgress {
+                    AnnotationRenderer.render(element, in: ctx, pixellatedImage: pixellatedFrozen, canvasSize: bounds.size)
+                }
+                ctx.restoreGState()
+            }
             ctx.setStrokeColor(CGColor(gray: 1, alpha: 0.9))
             ctx.setLineWidth(1)
             ctx.stroke(selectionRect.insetBy(dx: -0.5, dy: -0.5))
             drawSizeLabel(in: ctx)
         }
 
-        drawMagnifier(in: ctx)
+        if phase == .selecting || toolbarModel?.isPickingColor == true {
+            drawMagnifier(in: ctx)
+        }
     }
 
     private func drawWindowMode(in ctx: CGContext) {
@@ -346,8 +633,8 @@ final class SelectionView: NSView {
     }
 
     private func drawHint(in ctx: CGContext) {
-        // 拖拽过程中不显示提示，减少干扰
-        guard startPoint == nil else { return }
+        // 拖拽中/标注阶段不显示顶部提示，减少干扰
+        guard startPoint == nil, phase == .selecting else { return }
         let text = (mode == .region ? "拖拽选取区域  ·  C 取色" : "点击选取窗口") + "  ·  Space 切换  ·  Esc 取消" as NSString
         let attributes: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: 12, weight: .medium),
