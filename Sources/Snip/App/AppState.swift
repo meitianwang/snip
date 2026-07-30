@@ -16,12 +16,22 @@ final class AppState: ObservableObject {
 
     // MARK: - 设置
 
-    var saveDirectory: URL {
-        if let path = UserDefaults.standard.string(forKey: "saveDirectory") {
-            return URL(fileURLWithPath: path)
+    var saveDirectory: URL { SettingsStore.shared.saveDirectory }
+
+    /// 权限检查，未授权时引导去系统设置
+    private func ensurePermissionWithGuidance() -> Bool {
+        if CaptureEngine.ensurePermission() { return true }
+        let alert = NSAlert()
+        alert.messageText = "Snip 需要屏幕录制权限"
+        alert.informativeText = "请在「系统设置 → 隐私与安全性 → 屏幕录制」中勾选 Snip，然后重新打开应用。"
+        alert.addButton(withTitle: "打开系统设置")
+        alert.addButton(withTitle: "取消")
+        NSApp.activate(ignoringOtherApps: true)
+        if alert.runModal() == .alertFirstButtonReturn,
+           let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") {
+            NSWorkspace.shared.open(url)
         }
-        return FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask).first
-            ?? FileManager.default.homeDirectoryForCurrentUser
+        return false
     }
 
     // MARK: - 区域 / 窗口截取
@@ -33,7 +43,7 @@ final class AppState: ObservableObject {
 
     private func startInteractiveCapture(mode: CaptureMode) {
         guard !isCapturing else { return }
-        guard CaptureEngine.ensurePermission() else { return }
+        guard ensurePermissionWithGuidance() else { return }
         isCapturing = true
         currentMode = mode
 
@@ -130,9 +140,14 @@ final class AppState: ObservableObject {
         }
     }
 
-    /// 统一输出：剪贴板 + 保存 + 浮动预览
+    /// 统一输出：剪贴板 + 保存 + 浮动预览（按设置开关）
     private func deliverWithPreview(_ image: CGImage, scale: CGFloat) {
-        if let url = OutputService.deliver(image, scale: scale, saveTo: saveDirectory) {
+        let settings = SettingsStore.shared
+        if let url = OutputService.deliver(
+            image, scale: scale,
+            saveTo: saveDirectory,
+            copyToClipboard: settings.copyToClipboard
+        ), settings.showPreview {
             FloatingPreview.shared.show(image: image, scale: scale, fileURL: url)
         }
     }
@@ -160,7 +175,7 @@ final class AppState: ObservableObject {
 
     func captureFullScreen() {
         guard !isCapturing else { return }
-        guard CaptureEngine.ensurePermission() else { return }
+        guard ensurePermissionWithGuidance() else { return }
 
         Task {
             let mouse = NSEvent.mouseLocation

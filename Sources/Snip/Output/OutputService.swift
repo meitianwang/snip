@@ -4,7 +4,12 @@ import AppKit
 enum OutputService {
     /// 返回保存后的文件 URL（失败时 nil）
     @discardableResult
-    static func deliver(_ image: CGImage, scale: CGFloat, saveTo directory: URL) -> URL? {
+    static func deliver(
+        _ image: CGImage,
+        scale: CGFloat,
+        saveTo directory: URL,
+        copyToClipboard: Bool = true
+    ) -> URL? {
         // Retina: 像素尺寸 / scale = 点尺寸，保证粘贴时大小正确
         let pointSize = NSSize(
             width: CGFloat(image.width) / scale,
@@ -12,10 +17,12 @@ enum OutputService {
         )
         let nsImage = NSImage(cgImage: image, size: pointSize)
 
-        // 1. 剪贴板
-        let pasteboard = NSPasteboard.general
-        pasteboard.clearContents()
-        pasteboard.writeObjects([nsImage])
+        // 1. 剪贴板（可关）
+        if copyToClipboard {
+            let pasteboard = NSPasteboard.general
+            pasteboard.clearContents()
+            pasteboard.writeObjects([nsImage])
+        }
 
         // 2. 保存 PNG
         let rep = NSBitmapImageRep(cgImage: image)

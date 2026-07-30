@@ -1,6 +1,8 @@
 import SwiftUI
 
 struct MenuContent: View {
+    @ObservedObject private var settings = SettingsStore.shared
+
     var body: some View {
         Button("区域截取") {
             AppState.shared.startRegionCapture()
@@ -19,8 +21,18 @@ struct MenuContent: View {
 
         Divider()
 
+        Toggle("自动复制到剪贴板", isOn: $settings.copyToClipboard)
+        Toggle("截取后显示预览", isOn: $settings.showPreview)
+        Toggle("开机自动启动", isOn: $settings.launchAtLogin)
+
+        Divider()
+
+        Button("保存目录：\(settings.saveDirectory.lastPathComponent)…") {
+            settings.chooseSaveDirectory()
+        }
+
         Button("打开保存目录") {
-            NSWorkspace.shared.open(AppState.shared.saveDirectory)
+            NSWorkspace.shared.open(settings.saveDirectory)
         }
 
         Divider()
