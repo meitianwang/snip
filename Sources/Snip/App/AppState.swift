@@ -10,6 +10,7 @@ final class AppState: ObservableObject {
     @Published private(set) var isCapturing = false
 
     private var overlayWindows: [OverlayWindow] = []
+    private var editors: [EditorWindowController] = []
 
     private init() {}
 
@@ -140,6 +141,19 @@ final class AppState: ObservableObject {
         overlayWindows.forEach { $0.orderOut(nil) }
         overlayWindows.removeAll()
         isCapturing = false
+    }
+
+    // MARK: - 标注器
+
+    func openEditor(image: CGImage, scale: CGFloat, fileURL: URL) {
+        let document = AnnotationDocument(image: image, scale: scale, fileURL: fileURL)
+        let editor = EditorWindowController(document: document)
+        editor.onClose = { [weak self, weak editor] in
+            guard let editor else { return }
+            self?.editors.removeAll { $0 === editor }
+        }
+        editors.append(editor)
+        editor.show()
     }
 
     // MARK: - 全屏截取

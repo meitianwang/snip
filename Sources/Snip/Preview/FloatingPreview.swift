@@ -52,6 +52,10 @@ final class FloatingPreview {
             padding: padding
         )
         view.onDismiss = { [weak self] in self?.dismiss(animated: true) }
+        view.onOpen = { [weak self] in
+            self?.dismiss(animated: false)
+            AppState.shared.openEditor(image: image, scale: scale, fileURL: fileURL)
+        }
         panel.contentView = view
         panel.orderFrontRegardless()
         self.panel = panel
@@ -86,6 +90,7 @@ final class FloatingPreview {
 /// 缩略图视图：圆角 + 描边 + 阴影，支持拖拽文件、单击打开。
 final class PreviewThumbView: NSView {
     var onDismiss: (() -> Void)?
+    var onOpen: (() -> Void)?
 
     private let image: NSImage
     private let fileURL: URL
@@ -154,9 +159,8 @@ final class PreviewThumbView: NSView {
     override func mouseUp(with event: NSEvent) {
         guard mouseDownLocation != nil else { return }
         mouseDownLocation = nil
-        // 单击：打开文件（M4 时替换为标注器）
-        NSWorkspace.shared.open(fileURL)
-        onDismiss?()
+        // 单击：进入标注器
+        onOpen?()
     }
 
     // MARK: - 绘制
