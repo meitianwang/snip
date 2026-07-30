@@ -103,7 +103,7 @@ final class AnnotationDocument: ObservableObject {
         pasteboard.writeObjects([nsImage])
     }
 
-    /// 合成结果覆盖保存到原文件
+    /// 合成结果覆盖保存到原文件；若开启了自动复制，同步刷新剪贴板，保证粘贴与文件一致
     @discardableResult
     func save() -> Bool {
         guard let image = export() else { return false }
@@ -112,10 +112,16 @@ final class AnnotationDocument: ObservableObject {
         guard let data = rep.representation(using: .png, properties: [:]) else { return false }
         do {
             try data.write(to: fileURL)
-            return true
         } catch {
             NSLog("Snip: 标注保存失败 \(error)")
             return false
         }
+        if SettingsStore.shared.copyToClipboard {
+            let nsImage = NSImage(cgImage: image, size: canvasSize)
+            let pasteboard = NSPasteboard.general
+            pasteboard.clearContents()
+            pasteboard.writeObjects([nsImage])
+        }
+        return true
     }
 }

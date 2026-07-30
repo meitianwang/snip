@@ -49,6 +49,8 @@ final class AppState: ObservableObject {
 
         Task {
             do {
+                // 等菜单栏菜单收起，避免冻结帧拍到菜单
+                try? await Task.sleep(nanoseconds: 180_000_000)
                 let content = try await CaptureEngine.shareableContent()
                 let pickable = CaptureEngine.pickableWindows(from: content)
                 var windows: [OverlayWindow] = []
@@ -131,9 +133,9 @@ final class AppState: ObservableObject {
     }
 
     private func finishWindowCapture(_ window: SCWindow) {
-        // 先找到窗口所在屏幕的 scale，再关闭覆盖层、活体截取
-        let scale = overlayWindows
-            .first { $0.selectionView.mode == .window }?.screen?.backingScaleFactor
+        // 点击刚发生在鼠标所在屏幕，用它的 scale
+        let mouse = NSEvent.mouseLocation
+        let scale = NSScreen.screens.first { $0.frame.contains(mouse) }?.backingScaleFactor
             ?? NSScreen.main?.backingScaleFactor ?? 2
         dismissOverlays()
         Task {
@@ -184,6 +186,8 @@ final class AppState: ObservableObject {
         guard ensurePermissionWithGuidance() else { return }
 
         Task {
+            // 等菜单栏菜单收起
+            try? await Task.sleep(nanoseconds: 180_000_000)
             let mouse = NSEvent.mouseLocation
             guard let screen = NSScreen.screens.first(where: { $0.frame.contains(mouse) }) ?? NSScreen.main else { return }
             do {

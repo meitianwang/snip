@@ -13,9 +13,12 @@ final class SelectionView: NSView {
 
     var mode: CaptureMode = .region {
         didSet {
-            hoveredWindow = nil
             selectionRect = .zero
             startPoint = nil
+            // 切到窗口模式时立即按当前光标位置高亮，无需先动鼠标
+            hoveredWindow = mode == .window
+                ? pickableWindows.first { $0.rect.contains(mouseLocation) }
+                : nil
             needsDisplay = true
         }
     }
@@ -51,9 +54,13 @@ final class SelectionView: NSView {
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        // 初始化光标位置，避免鼠标未动时放大镜/取色落在 (0,0)
+        // 初始化光标位置，避免鼠标未动时放大镜/取色/窗口高亮落在 (0,0)
         if let window {
             mouseLocation = convert(window.mouseLocationOutsideOfEventStream, from: nil)
+        }
+        if mode == .window {
+            hoveredWindow = pickableWindows.first { $0.rect.contains(mouseLocation) }
+            needsDisplay = true
         }
     }
 

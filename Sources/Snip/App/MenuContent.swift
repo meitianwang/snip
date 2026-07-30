@@ -17,7 +17,7 @@ struct MenuContent: View {
         Button("全屏截取") {
             AppState.shared.captureFullScreen()
         }
-        .keyboardShortcut("3", modifiers: [.shift, .command])
+        .keyboardShortcut("0", modifiers: [.shift, .command])
 
         Divider()
 

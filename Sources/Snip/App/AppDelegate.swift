@@ -15,7 +15,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         HotkeyManager.shared.register(keyCode: UInt32(kVK_ANSI_2), modifiers: cmdShift) {
             Task { @MainActor in AppState.shared.startWindowCapture() }
         }
-        HotkeyManager.shared.register(keyCode: UInt32(kVK_ANSI_3), modifiers: cmdShift) {
+        // 全屏用 ⇧⌘0：⇧⌘3 是系统截屏快捷键，不能冲突
+        HotkeyManager.shared.register(keyCode: UInt32(kVK_ANSI_0), modifiers: cmdShift) {
             Task { @MainActor in AppState.shared.captureFullScreen() }
         }
     }

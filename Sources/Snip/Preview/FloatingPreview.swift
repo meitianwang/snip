@@ -12,7 +12,9 @@ final class FloatingPreview {
     func show(image: CGImage, scale: CGFloat, fileURL: URL) {
         dismiss(animated: false)
 
-        guard let screen = NSScreen.main else { return }
+        // 弹在鼠标所在屏幕（截取发生地），而非固定主屏
+        let mouse = NSEvent.mouseLocation
+        guard let screen = NSScreen.screens.first(where: { $0.frame.contains(mouse) }) ?? NSScreen.main else { return }
         let pointSize = NSSize(width: CGFloat(image.width) / scale, height: CGFloat(image.height) / scale)
 
         // 等比缩放到最大 300×200
@@ -72,7 +74,7 @@ final class FloatingPreview {
     func dismiss(animated: Bool) {
         guard let panel else { return }
         self.panel = nil
-        guard animated, let screen = NSScreen.main else {
+        guard animated, let screen = panel.screen ?? NSScreen.main else {
             panel.orderOut(nil)
             return
         }
