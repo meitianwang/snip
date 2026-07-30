@@ -110,7 +110,7 @@ final class AppState: ObservableObject {
 
     private func finishRegionCapture(_ image: CGImage, scale: CGFloat) {
         dismissOverlays()
-        OutputService.deliver(image, scale: scale, saveTo: saveDirectory)
+        deliverWithPreview(image, scale: scale)
     }
 
     private func finishWindowCapture(_ window: SCWindow) {
@@ -122,10 +122,17 @@ final class AppState: ObservableObject {
         Task {
             do {
                 let image = try await CaptureEngine.captureWindow(window, scale: scale)
-                OutputService.deliver(image, scale: scale, saveTo: saveDirectory)
+                deliverWithPreview(image, scale: scale)
             } catch {
                 NSLog("Snip: 窗口截取失败 \(error)")
             }
+        }
+    }
+
+    /// 统一输出：剪贴板 + 保存 + 浮动预览
+    private func deliverWithPreview(_ image: CGImage, scale: CGFloat) {
+        if let url = OutputService.deliver(image, scale: scale, saveTo: saveDirectory) {
+            FloatingPreview.shared.show(image: image, scale: scale, fileURL: url)
         }
     }
 
@@ -146,7 +153,7 @@ final class AppState: ObservableObject {
             guard let screen = NSScreen.screens.first(where: { $0.frame.contains(mouse) }) ?? NSScreen.main else { return }
             do {
                 let image = try await CaptureEngine.captureImage(of: screen)
-                OutputService.deliver(image, scale: screen.backingScaleFactor, saveTo: saveDirectory)
+                deliverWithPreview(image, scale: screen.backingScaleFactor)
             } catch {
                 NSLog("Snip: 全屏截取失败 \(error)")
             }
