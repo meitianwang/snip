@@ -12,6 +12,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         HotkeyManager.shared.register(keyCode: UInt32(kVK_ANSI_1), modifiers: cmdShift) {
             Task { @MainActor in AppState.shared.startRegionCapture() }
         }
+        HotkeyManager.shared.register(keyCode: UInt32(kVK_ANSI_2), modifiers: cmdShift) {
+            Task { @MainActor in AppState.shared.startWindowCapture() }
+        }
         HotkeyManager.shared.register(keyCode: UInt32(kVK_ANSI_3), modifiers: cmdShift) {
             Task { @MainActor in AppState.shared.captureFullScreen() }
         }

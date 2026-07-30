@@ -7,6 +7,11 @@ struct MenuContent: View {
         }
         .keyboardShortcut("1", modifiers: [.shift, .command])
 
+        Button("窗口截取") {
+            AppState.shared.startWindowCapture()
+        }
+        .keyboardShortcut("2", modifiers: [.shift, .command])
+
         Button("全屏截取") {
             AppState.shared.captureFullScreen()
         }

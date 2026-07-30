@@ -14,8 +14,15 @@ enum CaptureEngine {
         return CGRequestScreenCaptureAccess()
     }
 
+    static func shareableContent() async throws -> SCShareableContent {
+        try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+    }
+
     static func captureImage(of screen: NSScreen) async throws -> CGImage {
-        let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+        try await captureImage(of: screen, content: shareableContent())
+    }
+
+    static func captureImage(of screen: NSScreen, content: SCShareableContent) async throws -> CGImage {
         guard let displayID = screen.displayID,
               let display = content.displays.first(where: { $0.displayID == displayID }) else {
             throw CaptureError.displayNotFound
@@ -31,6 +38,32 @@ enum CaptureEngine {
 
         return try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
     }
+
+    /// 单独截取一个窗口（不含遮挡它的内容）
+    static func captureWindow(_ window: SCWindow, scale: CGFloat) async throws -> CGImage {
+        let filter = SCContentFilter(desktopIndependentWindow: window)
+        let config = SCStreamConfiguration()
+        config.width = Int(window.frame.width * scale)
+        config.height = Int(window.frame.height * scale)
+        config.showsCursor = false
+        config.captureResolution = .best
+        return try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
+    }
+
+    /// 可供用户点选的普通应用窗口（过滤自身/菜单栏等系统层）
+    static func pickableWindows(from content: SCShareableContent) -> [SCWindow] {
+        content.windows.filter { window in
+            window.isOnScreen
+                && window.windowLayer == 0
+                && window.frame.width >= 40 && window.frame.height >= 40
+                && window.owningApplication?.processID != ProcessInfo.processInfo.processIdentifier
+        }
+    }
+}
+
+enum CaptureMode {
+    case region
+    case window
 }
 
 extension NSScreen {
