@@ -28,6 +28,12 @@ struct MenuContent: View {
 
         Toggle("自动复制到剪贴板", isOn: $settings.copyToClipboard)
         Toggle("截取后显示预览", isOn: $settings.showPreview)
+        Toggle("窗口截取美化背景", isOn: $settings.beautifyWindowCapture)
+        Picker("美化背景风格", selection: $settings.beautifyStyle) {
+            ForEach(BeautifyStyle.allCases) { style in
+                Text(style.displayName).tag(style)
+            }
+        }
         Toggle("开机自动启动", isOn: $settings.launchAtLogin)
 
         Divider()

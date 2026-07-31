@@ -186,7 +186,12 @@ final class AppState: ObservableObject {
         dismissOverlays()
         Task {
             do {
-                let image = try await CaptureEngine.captureWindow(window, scale: scale)
+                var image = try await CaptureEngine.captureWindow(window, scale: scale)
+                // 美化：渐变背景 + 留白 + 投影（可在菜单关闭）
+                if SettingsStore.shared.beautifyWindowCapture,
+                   let beautified = ImageBeautifier.beautify(image, scale: scale, style: SettingsStore.shared.beautifyStyle) {
+                    image = beautified
+                }
                 deliverWithPreview(image, scale: scale)
             } catch {
                 NSLog("Snip: 窗口截取失败 \(error)")

@@ -17,6 +17,14 @@ final class SettingsStore: ObservableObject {
         didSet { defaults.set(showPreview, forKey: "showPreview") }
     }
 
+    @Published var beautifyWindowCapture: Bool {
+        didSet { defaults.set(beautifyWindowCapture, forKey: "beautifyWindowCapture") }
+    }
+
+    @Published var beautifyStyle: BeautifyStyle {
+        didSet { defaults.set(beautifyStyle.rawValue, forKey: "beautifyStyle") }
+    }
+
     @Published var saveDirectoryPath: String {
         didSet { defaults.set(saveDirectoryPath, forKey: "saveDirectory") }
     }
@@ -30,6 +38,8 @@ final class SettingsStore: ObservableObject {
             ?? NSHomeDirectory()
         copyToClipboard = defaults.object(forKey: "copyToClipboard") as? Bool ?? true
         showPreview = defaults.object(forKey: "showPreview") as? Bool ?? true
+        beautifyWindowCapture = defaults.object(forKey: "beautifyWindowCapture") as? Bool ?? true
+        beautifyStyle = BeautifyStyle(rawValue: defaults.string(forKey: "beautifyStyle") ?? "") ?? .indigo
         saveDirectoryPath = defaults.string(forKey: "saveDirectory") ?? desktop
         launchAtLogin = SMAppService.mainApp.status == .enabled
     }
