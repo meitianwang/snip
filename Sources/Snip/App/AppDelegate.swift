@@ -23,5 +23,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         HotkeyManager.shared.register(keyCode: UInt32(kVK_ANSI_9), modifiers: cmdShift) {
             Task { @MainActor in AppState.shared.startTextCapture() }
         }
+        // 滚动长截图
+        HotkeyManager.shared.register(keyCode: UInt32(kVK_ANSI_8), modifiers: cmdShift) {
+            Task { @MainActor in AppState.shared.startScrollCapture() }
+        }
     }
 }

@@ -8,11 +8,15 @@ final class OverlayToolbarModel: ObservableObject {
     @Published var color: NSColor = .systemRed
     /// 吸管取色模式：点击屏幕像素复制色值
     @Published var isPickingColor = false
+    /// 线宽（对齐钉钉 DTSCBrushSizeControlView：细/中/粗三档）
+    @Published var lineWidth: CGFloat = 3
 
     var onUndo: () -> Void = {}
     var onCancel: () -> Void = {}
     var onConfirm: () -> Void = {}
     var onOCR: () -> Void = {}
+    var onScroll: () -> Void = {}
+    var onSave: () -> Void = {}
 }
 
 /// 框选完成后出现在选区旁的工具条：标注工具 + 颜色 + 撤销 + ✕/✓。
@@ -66,6 +70,28 @@ struct OverlayToolbar: View {
 
             Divider().frame(height: 16).overlay(.white.opacity(0.3))
 
+            // 线宽三档（钉钉 DTSCBrushSizeControlView 同款）
+            HStack(spacing: 4) {
+                ForEach([CGFloat(2), 4, 7], id: \.self) { w in
+                    Button {
+                        model.lineWidth = w
+                    } label: {
+                        Circle()
+                            .fill(.white.opacity(model.lineWidth == w ? 1 : 0.5))
+                            .frame(width: 3 + w, height: 3 + w)
+                            .frame(width: 18, height: 20)
+                            .background(
+                                RoundedRectangle(cornerRadius: 4)
+                                    .fill(model.lineWidth == w ? Color.accentColor.opacity(0.9) : .clear)
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .help("线宽 \(Int(w))")
+                }
+            }
+
+            Divider().frame(height: 16).overlay(.white.opacity(0.3))
+
             // 吸管取色：点击后在选区内外任意像素取色
             Button {
                 model.isPickingColor.toggle()
@@ -95,6 +121,18 @@ struct OverlayToolbar: View {
             .buttonStyle(.plain)
             .help("识别选区文字 (OCR)")
 
+            // 长截图：对当前选区启动滚动拼接（钉钉同款）
+            Button {
+                model.onScroll()
+            } label: {
+                Image(systemName: "rectangle.portrait.arrowtriangle.2.outward")
+                    .font(.system(size: 12, weight: .medium))
+                    .frame(width: 28, height: 24)
+                    .foregroundStyle(.white.opacity(0.85))
+            }
+            .buttonStyle(.plain)
+            .help("长截图：在选区内滚动拼接")
+
             Divider().frame(height: 16).overlay(.white.opacity(0.3))
 
             Button {
@@ -107,6 +145,18 @@ struct OverlayToolbar: View {
             }
             .buttonStyle(.plain)
             .help("撤销 (⌘Z)")
+
+            // 保存到指定位置
+            Button {
+                model.onSave()
+            } label: {
+                Image(systemName: "square.and.arrow.down")
+                    .font(.system(size: 12, weight: .medium))
+                    .frame(width: 26, height: 24)
+                    .foregroundStyle(.white.opacity(0.85))
+            }
+            .buttonStyle(.plain)
+            .help("另存为… (⌘S)")
 
             Button {
                 model.onCancel()

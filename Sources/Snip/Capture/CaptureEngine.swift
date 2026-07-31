@@ -50,6 +50,26 @@ enum CaptureEngine {
         return try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
     }
 
+    /// 可重复使用的显示器捕捉器（排除 Snip 自身窗口），供长截图逐帧截取
+    static func displayCapturer(for screen: NSScreen) async throws -> (SCContentFilter, SCStreamConfiguration) {
+        let content = try await shareableContent()
+        guard let displayID = screen.displayID,
+              let display = content.displays.first(where: { $0.displayID == displayID }) else {
+            throw CaptureError.displayNotFound
+        }
+        let ownWindows = content.windows.filter {
+            $0.owningApplication?.processID == ProcessInfo.processInfo.processIdentifier
+        }
+        let filter = SCContentFilter(display: display, excludingWindows: ownWindows)
+        let config = SCStreamConfiguration()
+        let scale = screen.backingScaleFactor
+        config.width = Int(CGFloat(display.width) * scale)
+        config.height = Int(CGFloat(display.height) * scale)
+        config.showsCursor = false
+        config.captureResolution = .best
+        return (filter, config)
+    }
+
     /// 可供用户点选的普通应用窗口（过滤自身/菜单栏等系统层）
     static func pickableWindows(from content: SCShareableContent) -> [SCWindow] {
         content.windows.filter { window in
@@ -66,10 +86,11 @@ enum CaptureMode {
     case window
 }
 
-/// 区域截取的用途：普通截图 / OCR 取字
+/// 区域截取的用途：普通截图 / OCR 取字 / 滚动长截图
 enum CapturePurpose {
     case image
     case text
+    case scroll
 }
 
 extension NSScreen {

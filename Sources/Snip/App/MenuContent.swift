@@ -2,6 +2,7 @@ import SwiftUI
 
 struct MenuContent: View {
     @ObservedObject private var settings = SettingsStore.shared
+    @ObservedObject private var history = HistoryStore.shared
 
     var body: some View {
         Button("区域截取") {
@@ -23,6 +24,29 @@ struct MenuContent: View {
             AppState.shared.startTextCapture()
         }
         .keyboardShortcut("9", modifiers: [.shift, .command])
+
+        Button("滚动长截图") {
+            AppState.shared.startScrollCapture()
+        }
+        .keyboardShortcut("8", modifiers: [.shift, .command])
+
+        Divider()
+
+        Menu("最近截图") {
+            if history.items.isEmpty {
+                Text("暂无截图")
+            } else {
+                ForEach(history.items, id: \.self) { url in
+                    Button(url.deletingPathExtension().lastPathComponent) {
+                        AppState.shared.openHistoryItem(url)
+                    }
+                }
+                Divider()
+                Button("清空历史") {
+                    history.clear()
+                }
+            }
+        }
 
         Divider()
 

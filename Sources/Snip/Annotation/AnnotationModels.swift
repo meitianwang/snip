@@ -1,16 +1,21 @@
 import AppKit
 import CoreImage
 
+/// 标注工具集，对齐钉钉截图助手 DTSCDrawingTools
+/// （逆向可见其工具名：rect / ellipse / line / arrow / brush / text / mosaic / highlight / step）
 enum AnnotationTool: CaseIterable {
-    case rect, ellipse, arrow, text, pen, mosaic
+    case rect, ellipse, line, arrow, pen, highlight, step, text, mosaic
 
     var symbolName: String {
         switch self {
         case .rect: "rectangle"
         case .ellipse: "circle"
+        case .line: "line.diagonal"
         case .arrow: "arrow.up.right"
-        case .text: "textformat"
         case .pen: "scribble"
+        case .highlight: "highlighter"
+        case .step: "1.circle.fill"
+        case .text: "textformat"
         case .mosaic: "square.grid.3x3.square"
         }
     }
@@ -19,22 +24,36 @@ enum AnnotationTool: CaseIterable {
         switch self {
         case .rect: "矩形"
         case .ellipse: "椭圆"
+        case .line: "直线"
         case .arrow: "箭头"
-        case .text: "文字"
         case .pen: "画笔"
+        case .highlight: "荧光笔"
+        case .step: "序号"
+        case .text: "文字"
         case .mosaic: "马赛克"
         }
     }
 
-    /// 工具切换快捷键（R/O/A/T/P/M）
+    /// 工具切换快捷键
     var shortcutKey: Character {
         switch self {
         case .rect: "r"
         case .ellipse: "o"
+        case .line: "l"
         case .arrow: "a"
-        case .text: "t"
         case .pen: "p"
+        case .highlight: "h"
+        case .step: "n"
+        case .text: "t"
         case .mosaic: "m"
+        }
+    }
+
+    /// 拖拽类工具（rect/ellipse/mosaic 用 rect，其余用 points）
+    var usesRect: Bool {
+        switch self {
+        case .rect, .ellipse, .mosaic, .highlight: true
+        default: false
         }
     }
 }
@@ -49,13 +68,17 @@ struct AnnotationElement: Identifiable {
     var color: NSColor = .systemRed
     var lineWidth: CGFloat = 3
     var fontSize: CGFloat = 18
+    /// 序号标注的编号（step 工具）
+    var stepIndex: Int = 1
 
     /// 命中测试用的包围盒
     var boundingBox: NSRect {
         switch tool {
-        case .rect, .ellipse, .mosaic, .text:
+        case .rect, .ellipse, .mosaic, .text, .highlight:
             return rect.insetBy(dx: -6, dy: -6)
-        case .arrow, .pen:
+        case .step:
+            return rect.insetBy(dx: -stepRadius - 2, dy: -stepRadius - 2)
+        case .line, .arrow, .pen:
             guard let first = points.first else { return .zero }
             var box = NSRect(origin: first, size: .zero)
             for point in points.dropFirst() {
@@ -71,6 +94,9 @@ struct AnnotationElement: Identifiable {
         rect.origin.y += delta.y
         points = points.map { NSPoint(x: $0.x + delta.x, y: $0.y + delta.y) }
     }
+
+    /// 序号圆点半径（随线宽略微变化）
+    var stepRadius: CGFloat { 11 + lineWidth }
 
     var textAttributes: [NSAttributedString.Key: Any] {
         [
@@ -104,9 +130,38 @@ enum AnnotationRenderer {
         case .ellipse:
             ctx.strokeEllipse(in: element.rect)
 
+        case .line:
+            guard element.points.count >= 2 else { return }
+            ctx.move(to: element.points[0])
+            ctx.addLine(to: element.points[1])
+            ctx.strokePath()
+
         case .arrow:
             guard element.points.count >= 2 else { return }
             renderArrow(from: element.points[0], to: element.points[1], in: ctx, lineWidth: element.lineWidth)
+
+        case .highlight:
+            // 荧光笔：半透明色块叠加（钉钉 highlight 同款）
+            ctx.setFillColor(element.color.withAlphaComponent(0.35).cgColor)
+            ctx.fill(element.rect)
+
+        case .step:
+            // 序号：实心圆 + 居中白字（钉钉 step 同款）
+            let r = element.stepRadius
+            let center = element.rect.origin
+            let circle = CGRect(x: center.x - r, y: center.y - r, width: r * 2, height: r * 2)
+            ctx.setFillColor(element.color.cgColor)
+            ctx.fillEllipse(in: circle)
+            let label = "\(element.stepIndex)" as NSString
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.systemFont(ofSize: r, weight: .bold),
+                .foregroundColor: NSColor.white,
+            ]
+            let size = label.size(withAttributes: attrs)
+            label.draw(
+                at: NSPoint(x: center.x - size.width / 2, y: center.y - size.height / 2),
+                withAttributes: attrs
+            )
 
         case .pen:
             guard element.points.count >= 2 else { return }

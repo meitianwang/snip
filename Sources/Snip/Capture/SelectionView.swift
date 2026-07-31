@@ -14,6 +14,10 @@ final class SelectionView: NSView {
     var onColorPicked: ((String) -> Void)?
     /// OCR：交付选区裁切图，由外部识别并展示结果
     var onRecognizeText: ((CGImage) -> Void)?
+    /// 长截图：交付框选区域（显示器像素坐标，顶部原点）
+    var onScrollRegionPicked: ((CGRect) -> Void)?
+    /// 另存为：交付合成图，由外部弹保存面板
+    var onSaveRequested: ((CGImage, CGFloat) -> Void)?
 
     /// 截取用途：OCR 模式下框选即识别，不进标注阶段
     var purpose: CapturePurpose = .image
@@ -53,6 +57,9 @@ final class SelectionView: NSView {
     private var toolbarCancellable: AnyCancellable?
     private var textEditor: NSTextField?
     private var editingElementID: UUID?
+    /// 选区调整：0=整体移动，1~8=八方位手柄；画过标注后锁定
+    private var adjust: (handle: Int, anchor: NSPoint, orig: NSRect)?
+    private var selectionLocked: Bool { !annotations.isEmpty || textEditor != nil }
     /// 马赛克底图惰性生成
     private lazy var pixellatedFrozen: CGImage? =
         AnnotationRenderer.makePixellatedImage(from: frozenImage, scale: screenScale)
@@ -98,10 +105,12 @@ final class SelectionView: NSView {
         switch event.keyCode {
         case 53: // Esc
             onCancel?()
-        case 49 where phase == .selecting: // Space
-            onModeToggle?()
+        case 49 where phase == .selecting: // Space（长截图/OCR 专用通道不切模式）
+            if purpose == .image { onModeToggle?() }
         case 36, 76: // 回车：确认完成
             if phase == .annotating { confirmAnnotatedCapture() }
+        case 1 where event.modifierFlags.contains(.command): // ⌘S 另存为
+            if phase == .annotating { saveAnnotatedCapture() }
         case 8: // C：取色
             if phase == .selecting {
                 copyColorUnderCursor() // 选择阶段：取色即结束本次截取
@@ -154,6 +163,9 @@ final class SelectionView: NSView {
         mouseLocation = convert(event.locationInWindow, from: nil)
         if mode == .window {
             hoveredWindow = pickableWindows.first { $0.rect.contains(mouseLocation) }
+        } else if phase == .selecting, startPoint == nil, selectionRect.isEmpty {
+            // 钉钉式：区域模式下悬停自动高亮窗口，单击即选中该区域
+            hoveredWindow = pickableWindows.first { $0.rect.contains(mouseLocation) }
         }
         needsDisplay = true
     }
@@ -162,7 +174,7 @@ final class SelectionView: NSView {
         guard mode == .region else { return }
         let point = convert(event.locationInWindow, from: nil)
         if phase == .annotating {
-            annotationMouseDown(at: point)
+            annotationMouseDown(at: point, clickCount: event.clickCount)
             return
         }
         startPoint = point
@@ -198,20 +210,27 @@ final class SelectionView: NSView {
                 return
             }
             defer { startPoint = nil }
-            guard selectionRect.width >= 2, selectionRect.height >= 2 else {
-                selectionRect = .zero
-                needsDisplay = true
-                return
+            if selectionRect.width < 4 || selectionRect.height < 4 {
+                // 单击：选中悬停高亮的窗口区域（钉钉式）
+                guard let hovered = hoveredWindow else {
+                    selectionRect = .zero
+                    needsDisplay = true
+                    return
+                }
+                selectionRect = hovered.rect.intersection(bounds).integral
             }
-            if purpose == .text {
-                // OCR：框选即交付裁切图，不进标注阶段
+            hoveredWindow = nil
+            if purpose == .text || purpose == .scroll {
+                // OCR/长截图：框选即交付，不进标注阶段
                 let pixelRect = CGRect(
                     x: selectionRect.minX * screenScale,
                     y: (bounds.height - selectionRect.maxY) * screenScale,
                     width: selectionRect.width * screenScale,
                     height: selectionRect.height * screenScale
                 ).integral
-                if let cropped = frozenImage.cropping(to: pixelRect) {
+                if purpose == .scroll {
+                    onScrollRegionPicked?(pixelRect)
+                } else if let cropped = frozenImage.cropping(to: pixelRect) {
                     onComplete?(cropped, screenScale)
                 } else {
                     onCancel?()
@@ -234,6 +253,8 @@ final class SelectionView: NSView {
         model.onCancel = { [weak self] in self?.onCancel?() }
         model.onConfirm = { [weak self] in self?.confirmAnnotatedCapture() }
         model.onOCR = { [weak self] in self?.performOCR() }
+        model.onScroll = { [weak self] in self?.startScrollFromSelection() }
+        model.onSave = { [weak self] in self?.saveAnnotatedCapture() }
         toolbarModel = model
         // 工具/取色模式切换时重绘（如放大镜显隐）
         toolbarCancellable = model.objectWillChange
@@ -294,17 +315,58 @@ final class SelectionView: NSView {
         }
     }
 
+    /// 工具条长截图：以当前选区为滚动区域启动拼接会话
+    private func startScrollFromSelection() {
+        guard phase == .annotating else { return }
+        commitTextEditorIfNeeded()
+        let pixelRect = CGRect(
+            x: selectionRect.minX * screenScale,
+            y: (bounds.height - selectionRect.maxY) * screenScale,
+            width: selectionRect.width * screenScale,
+            height: selectionRect.height * screenScale
+        ).integral
+        onScrollRegionPicked?(pixelRect)
+    }
+
+    /// 工具条保存：合成后交给外部弹保存面板
+    private func saveAnnotatedCapture() {
+        guard phase == .annotating else { return }
+        commitTextEditorIfNeeded()
+        if let image = compositeSelection() {
+            onSaveRequested?(image, screenScale)
+        }
+    }
+
     private func undoAnnotation() {
         guard phase == .annotating, let last = annotationUndoStack.popLast() else { return }
         annotations = last
         needsDisplay = true
     }
 
-    private func annotationMouseDown(at point: NSPoint) {
+    private func annotationMouseDown(at point: NSPoint, clickCount: Int) {
         commitTextEditorIfNeeded()
         // 吸管取色模式：点击即取色，不画元素
         if toolbarModel?.isPickingColor == true {
             pickColorAndStay(at: point)
+            return
+        }
+        if toolbarModel?.tool == nil {
+            // 双击选区内 = 完成（钉钉式）
+            if clickCount >= 2, selectionRect.contains(point) {
+                confirmAnnotatedCapture()
+                return
+            }
+            // 未选工具且未画标注：可拖手柄调整 / 拖内部移动选区
+            if !selectionLocked {
+                if let handle = handleHit(at: point) {
+                    adjust = (handle, point, selectionRect)
+                    return
+                }
+                if selectionRect.contains(point) {
+                    adjust = (0, point, selectionRect)
+                    return
+                }
+            }
             return
         }
         guard let tool = toolbarModel?.tool else { return }
@@ -315,13 +377,22 @@ final class SelectionView: NSView {
             return
         }
         var element = AnnotationElement(tool: tool, color: color)
+        element.lineWidth = toolbarModel?.lineWidth ?? 3
+        element.stepIndex = annotations.filter { $0.tool == .step }.count + 1
         switch tool {
-        case .rect, .ellipse, .mosaic:
+        case .rect, .ellipse, .mosaic, .highlight:
             element.rect = NSRect(origin: point, size: .zero)
-        case .arrow:
+        case .line, .arrow:
             element.points = [point, point]
         case .pen:
             element.points = [point]
+        case .step:
+            // 序号：单击即落一个，rect.origin 记圆心
+            element.rect = NSRect(origin: point, size: .zero)
+            annotationUndoStack.append(annotations)
+            annotations.append(element)
+            needsDisplay = true
+            return
         case .text:
             break
         }
@@ -330,9 +401,13 @@ final class SelectionView: NSView {
     }
 
     private func annotationMouseDragged(to point: NSPoint) {
+        if let a = adjust {
+            applyAdjust(a, to: point)
+            return
+        }
         guard var element = inProgress else { return }
         switch element.tool {
-        case .rect, .ellipse, .mosaic:
+        case .rect, .ellipse, .mosaic, .highlight:
             let start = dragAnchor ?? element.rect.origin
             element.rect = NSRect(
                 x: min(start.x, point.x),
@@ -340,11 +415,11 @@ final class SelectionView: NSView {
                 width: abs(point.x - start.x),
                 height: abs(point.y - start.y)
             )
-        case .arrow:
+        case .line, .arrow:
             element.points[1] = point
         case .pen:
             element.points.append(point)
-        case .text:
+        case .step, .text:
             break
         }
         inProgress = element
@@ -352,6 +427,13 @@ final class SelectionView: NSView {
     }
 
     private func annotationMouseUp() {
+        if adjust != nil {
+            adjust = nil
+            selectionRect = selectionRect.integral
+            layoutToolbar()
+            needsDisplay = true
+            return
+        }
         defer {
             inProgress = nil
             dragAnchor = nil
@@ -360,10 +442,11 @@ final class SelectionView: NSView {
         guard let element = inProgress else { return }
         let meaningful: Bool = switch element.tool {
         case .pen: element.points.count >= 2
-        case .arrow: hypot(
+        case .line, .arrow: hypot(
             element.points[1].x - element.points[0].x,
             element.points[1].y - element.points[0].y
         ) >= 4
+        case .step: true
         default: element.rect.width >= 6 && element.rect.height >= 6
         }
         if meaningful {
@@ -417,13 +500,56 @@ final class SelectionView: NSView {
         needsDisplay = true
     }
 
+    // MARK: 选区调整（钩钉式手柄）
+
+    /// 8 手柄位置：1~8 = 左下、下、右下、左、右、左上、上、右上
+    private func handlePoints() -> [NSPoint] {
+        let r = selectionRect
+        return [
+            NSPoint(x: r.minX, y: r.minY), NSPoint(x: r.midX, y: r.minY), NSPoint(x: r.maxX, y: r.minY),
+            NSPoint(x: r.minX, y: r.midY), NSPoint(x: r.maxX, y: r.midY),
+            NSPoint(x: r.minX, y: r.maxY), NSPoint(x: r.midX, y: r.maxY), NSPoint(x: r.maxX, y: r.maxY),
+        ]
+    }
+
+    private func handleHit(at point: NSPoint) -> Int? {
+        for (i, p) in handlePoints().enumerated()
+        where abs(p.x - point.x) <= 8 && abs(p.y - point.y) <= 8 {
+            return i + 1
+        }
+        return nil
+    }
+
+    private func applyAdjust(_ a: (handle: Int, anchor: NSPoint, orig: NSRect), to point: NSPoint) {
+        let dx = point.x - a.anchor.x
+        let dy = point.y - a.anchor.y
+        var r = a.orig
+        switch a.handle {
+        case 0: // 整体移动，限制在屏内
+            r.origin.x = min(max(bounds.minX, r.origin.x + dx), bounds.maxX - r.width)
+            r.origin.y = min(max(bounds.minY, r.origin.y + dy), bounds.maxY - r.height)
+        case 1: r.origin.x += dx; r.size.width -= dx; r.origin.y += dy; r.size.height -= dy
+        case 2: r.origin.y += dy; r.size.height -= dy
+        case 3: r.size.width += dx; r.origin.y += dy; r.size.height -= dy
+        case 4: r.origin.x += dx; r.size.width -= dx
+        case 5: r.size.width += dx
+        case 6: r.origin.x += dx; r.size.width -= dx; r.size.height += dy
+        case 7: r.size.height += dy
+        case 8: r.size.width += dx; r.size.height += dy
+        default: break
+        }
+        var next = r.standardized.intersection(bounds)
+        if next.width < 20 { next.size.width = 20 }
+        if next.height < 20 { next.size.height = 20 }
+        selectionRect = next
+        layoutToolbar()
+        needsDisplay = true
+    }
+
     // MARK: 合成确认
 
-    /// ✓：冻结帧 + 标注全分辨率合成，裁切选区后交付
-    private func confirmAnnotatedCapture() {
-        guard phase == .annotating else { return }
-        commitTextEditorIfNeeded()
-
+    /// 冻结帧 + 标注全分辨率合成，裁切选区
+    private func compositeSelection() -> CGImage? {
         let pixelRect = CGRect(
             x: selectionRect.minX * screenScale,
             y: (bounds.height - selectionRect.maxY) * screenScale,
@@ -433,12 +559,7 @@ final class SelectionView: NSView {
 
         // 无标注直接裁切，免去重绘成本
         if annotations.isEmpty {
-            if let cropped = frozenImage.cropping(to: pixelRect) {
-                onComplete?(cropped, screenScale)
-            } else {
-                onCancel?()
-            }
-            return
+            return frozenImage.cropping(to: pixelRect)
         }
 
         guard let ctx = CGContext(
@@ -449,10 +570,7 @@ final class SelectionView: NSView {
             bytesPerRow: 0,
             space: CGColorSpace(name: CGColorSpace.sRGB)!,
             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-        ) else {
-            onCancel?()
-            return
-        }
+        ) else { return nil }
         ctx.draw(frozenImage, in: CGRect(x: 0, y: 0, width: frozenImage.width, height: frozenImage.height))
         ctx.scaleBy(x: screenScale, y: screenScale)
         let nsContext = NSGraphicsContext(cgContext: ctx, flipped: false)
@@ -462,9 +580,15 @@ final class SelectionView: NSView {
             AnnotationRenderer.render(element, in: ctx, pixellatedImage: pixellatedFrozen, canvasSize: bounds.size)
         }
         NSGraphicsContext.restoreGraphicsState()
+        return ctx.makeImage()?.cropping(to: pixelRect)
+    }
 
-        if let full = ctx.makeImage(), let cropped = full.cropping(to: pixelRect) {
-            onComplete?(cropped, screenScale)
+    /// ✓：合成后交付
+    private func confirmAnnotatedCapture() {
+        guard phase == .annotating else { return }
+        commitTextEditorIfNeeded()
+        if let image = compositeSelection() {
+            onComplete?(image, screenScale)
         } else {
             onCancel?()
         }
@@ -487,11 +611,32 @@ final class SelectionView: NSView {
     }
 
     private func drawRegionMode(in ctx: CGContext) {
+        // 悬停窗口高亮（选择阶段、尚未开始拖拽）
+        let hoverRect: NSRect? = (phase == .selecting && selectionRect.isEmpty && startPoint == nil)
+            ? hoveredWindow.map { $0.rect.intersection(bounds) }
+            : nil
+
         // 暗色遮罩（even-odd 挖洞）
         ctx.setFillColor(CGColor(gray: 0, alpha: 0.35))
         ctx.addRect(bounds)
-        if !selectionRect.isEmpty { ctx.addRect(selectionRect) }
+        if !selectionRect.isEmpty {
+            ctx.addRect(selectionRect)
+        } else if let hoverRect {
+            ctx.addRect(hoverRect)
+        }
         ctx.fillPath(using: .evenOdd)
+
+        if let hoverRect {
+            let accent = NSColor.controlAccentColor.usingColorSpace(.sRGB) ?? .systemBlue
+            ctx.setStrokeColor(accent.cgColor)
+            ctx.setLineWidth(3)
+            let path = CGPath(
+                roundedRect: hoverRect.insetBy(dx: 1.5, dy: 1.5),
+                cornerWidth: 8, cornerHeight: 8, transform: nil
+            )
+            ctx.addPath(path)
+            ctx.strokePath()
+        }
 
         if !selectionRect.isEmpty {
             // 标注阶段：已画元素 + 进行中元素，裁剪到选区内
@@ -509,6 +654,18 @@ final class SelectionView: NSView {
             ctx.setStrokeColor(CGColor(gray: 1, alpha: 0.9))
             ctx.setLineWidth(1)
             ctx.stroke(selectionRect.insetBy(dx: -0.5, dy: -0.5))
+            // 可调整阶段画 8 手柄
+            if phase == .annotating, !selectionLocked, inProgress == nil {
+                let accent = NSColor.controlAccentColor.usingColorSpace(.sRGB) ?? .systemBlue
+                for p in handlePoints() {
+                    let dot = NSRect(x: p.x - 4, y: p.y - 4, width: 8, height: 8)
+                    ctx.setFillColor(CGColor(gray: 1, alpha: 1))
+                    ctx.fillEllipse(in: dot)
+                    ctx.setStrokeColor(accent.cgColor)
+                    ctx.setLineWidth(1.5)
+                    ctx.strokeEllipse(in: dot)
+                }
+            }
             drawSizeLabel(in: ctx)
         }
 
@@ -671,8 +828,13 @@ final class SelectionView: NSView {
     private func drawHint(in ctx: CGContext) {
         // 拖拽中/标注阶段不显示顶部提示，减少干扰
         guard startPoint == nil, phase == .selecting else { return }
-        let action = purpose == .text ? "框选识别文字" : "拖拽选取区域  ·  C 取色"
-        let text = (mode == .region ? action : "点击选取窗口") + "  ·  Space 切换  ·  Esc 取消" as NSString
+        let action = switch purpose {
+        case .text: "框选识别文字"
+        case .scroll: "框选要长截图的区域，松手后在里面滚动"
+        case .image: "拖拽框选 · 点击选中窗口 · C 取色"
+        }
+        let windowAction = "点击选取窗口"
+        let text = (mode == .region ? action : windowAction) + "  ·  Esc 取消" as NSString
         let attributes: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: 12, weight: .medium),
             .foregroundColor: NSColor.white.withAlphaComponent(0.85),

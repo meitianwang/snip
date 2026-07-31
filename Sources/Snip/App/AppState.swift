@@ -1,6 +1,7 @@
 import AppKit
 import ScreenCaptureKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// 全局状态与截取流程协调器。
 @MainActor
@@ -41,6 +42,16 @@ final class AppState: ObservableObject {
     func startWindowCapture() { startInteractiveCapture(mode: .window) }
     /// OCR 取字：框选 → 识别 → 文字进剪贴板
     func startTextCapture() { startInteractiveCapture(mode: .region, purpose: .text) }
+    /// 滚动长截图（钉钉模式）：框选区域 → 用户手动滚动 → ✓ 完成；再按一次 ⇧⌘8 也可完成
+    func startScrollCapture() {
+        if let session = scrollSession {
+            session.finish()
+            return
+        }
+        startInteractiveCapture(mode: .region, purpose: .scroll)
+    }
+
+    private var scrollSession: ScrollCaptureSession?
 
     private var currentMode: CaptureMode = .region
     private var currentPurpose: CapturePurpose = .image
@@ -113,6 +124,42 @@ final class AppState: ObservableObject {
                 // 保留覆盖层：结果窗口浮在选区之上，方便对照原文校对
                 self?.recognizeAndShowResult(from: image)
             }
+        }
+        overlay.selectionView.onScrollRegionPicked = { [weak self, weak overlay] pixelRect in
+            Task { @MainActor in
+                guard let self, let screen = overlay?.screen else { return }
+                self.dismissOverlays()
+                self.performScrollCapture(region: pixelRect, on: screen)
+            }
+        }
+        overlay.selectionView.onSaveRequested = { [weak self] image, scale in
+            Task { @MainActor in
+                self?.dismissOverlays()
+                self?.saveWithPanel(image, scale: scale)
+            }
+        }
+    }
+
+    /// 另存为：原生保存面板（钉钉「下载」同款）
+    private func saveWithPanel(_ image: CGImage, scale: CGFloat) {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.png]
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd 'at' HH.mm.ss"
+        panel.nameFieldStringValue = "Snip \(formatter.string(from: Date())).png"
+        panel.directoryURL = saveDirectory
+        NSApp.activate(ignoringOtherApps: true)
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        let rep = NSBitmapImageRep(cgImage: image)
+        rep.size = NSSize(width: CGFloat(image.width) / scale, height: CGFloat(image.height) / scale)
+        guard let data = rep.representation(using: .png, properties: [:]) else { return }
+        do {
+            try data.write(to: url)
+            HistoryStore.shared.add(url)
+            Toast.show("已保存")
+        } catch {
+            NSLog("Snip: 另存为失败 \(error)")
+            Toast.show("保存失败")
         }
     }
 
@@ -199,6 +246,22 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// 滚动长截图：启动会话，用户在框选区域内手动滚动，HUD 控制完成/取消
+    private func performScrollCapture(region: CGRect, on screen: NSScreen) {
+        let session = ScrollCaptureSession(pixelRegion: region, screen: screen) { [weak self] image in
+            guard let self else { return }
+            self.scrollSession = nil
+            if let image {
+                self.deliverWithPreview(image, scale: screen.backingScaleFactor)
+            }
+        }
+        session.onSave = { [weak self] image in
+            self?.saveWithPanel(image, scale: screen.backingScaleFactor)
+        }
+        scrollSession = session
+        session.start()
+    }
+
     /// 统一输出：剪贴板 + 保存 + 浮动预览（按设置开关）
     private func deliverWithPreview(_ image: CGImage, scale: CGFloat) {
         let settings = SettingsStore.shared
@@ -219,7 +282,17 @@ final class AppState: ObservableObject {
         ocrWindows.forEach { $0.setFloatsAboveCapture(false) }
     }
 
-    // MARK: - 标注器
+    // MARK: - 标注器 / 历史
+
+    func openHistoryItem(_ url: URL) {
+        guard let nsImage = NSImage(contentsOf: url),
+              let cgImage = nsImage.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+            Toast.show("文件已不存在")
+            return
+        }
+        let scale = nsImage.size.width > 0 ? CGFloat(cgImage.width) / nsImage.size.width : 2
+        openEditor(image: cgImage, scale: scale, fileURL: url)
+    }
 
     func openEditor(image: CGImage, scale: CGFloat, fileURL: URL) {
         let document = AnnotationDocument(image: image, scale: scale, fileURL: fileURL)

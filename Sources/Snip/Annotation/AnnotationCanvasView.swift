@@ -84,13 +84,20 @@ final class AnnotationCanvasView: NSView {
 
         // 其余工具：开始绘制
         var element = AnnotationElement(tool: document.tool, color: document.color)
+        element.stepIndex = document.elements.filter { $0.tool == .step }.count + 1
         switch document.tool {
-        case .rect, .ellipse, .mosaic:
+        case .rect, .ellipse, .mosaic, .highlight:
             element.rect = NSRect(origin: point, size: .zero)
-        case .arrow:
+        case .line, .arrow:
             element.points = [point, point]
         case .pen:
             element.points = [point]
+        case .step:
+            element.rect = NSRect(origin: point, size: .zero)
+            document.snapshot()
+            document.elements.append(element)
+            needsDisplay = true
+            return
         case .text:
             break
         }
@@ -105,7 +112,7 @@ final class AnnotationCanvasView: NSView {
             break
         case .drawing(var element):
             switch element.tool {
-            case .rect, .ellipse, .mosaic:
+            case .rect, .ellipse, .mosaic, .highlight:
                 let start = dragAnchor ?? element.rect.origin
                 element.rect = NSRect(
                     x: min(start.x, point.x),
@@ -113,11 +120,11 @@ final class AnnotationCanvasView: NSView {
                     width: abs(point.x - start.x),
                     height: abs(point.y - start.y)
                 )
-            case .arrow:
+            case .line, .arrow:
                 element.points[1] = point
             case .pen:
                 element.points.append(point)
-            case .text:
+            case .step, .text:
                 break
             }
             dragState = .drawing(element)
@@ -140,7 +147,8 @@ final class AnnotationCanvasView: NSView {
             let big = element.boundingBox
             let meaningful: Bool = switch element.tool {
             case .pen: element.points.count >= 2
-            case .arrow: hypot(
+            case .step: true
+            case .line, .arrow: hypot(
                 element.points[1].x - element.points[0].x,
                 element.points[1].y - element.points[0].y
             ) >= 4

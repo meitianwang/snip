@@ -37,6 +37,7 @@ enum OutputService {
         let url = directory.appendingPathComponent(filename)
         do {
             try data.write(to: url)
+            Task { @MainActor in HistoryStore.shared.add(url) }
             return url
         } catch {
             NSLog("Snip: 保存失败 \(error)")
