@@ -54,6 +54,7 @@ final class SelectionView: NSView {
     private var dragAnchor: NSPoint?
     private var toolbarModel: OverlayToolbarModel?
     private var toolbarHost: NSView?
+    private var toolbarPanel: NSPanel?
     private var toolbarCancellable: AnyCancellable?
     private var textEditor: NSTextField?
     private var editingElementID: UUID?
@@ -150,42 +151,105 @@ final class SelectionView: NSView {
     /// - 选区未确定 / 绘制工具激活：crosshair
     override func resetCursorRects() {
         discardCursorRects()
-        // 吸管取色：系统取色手感用十字
-        if toolbarModel?.isPickingColor == true {
-            addCursorRect(bounds, cursor: .crosshair)
-            return
-        }
-        // 窗口点选模式：箭头（钉钉悬停选窗同款）
+        // 窗口点选模式：全屏箭头（钉钉悬停选窗同款）
         if mode == .window {
             addCursorRect(bounds, cursor: .arrow)
             return
         }
-        // 标注阶段
-        if phase == .annotating {
-            if let tool = toolbarModel?.tool {
-                // 绘制工具激活：文字用 I 形，其余十字
-                addCursorRect(bounds, cursor: tool == .text ? .iBeam : .crosshair)
-                return
+        // 吸管取色：全屏十字（取像素）
+        if toolbarModel?.isPickingColor == true {
+            addCursorRect(bounds, cursor: .crosshair)
+            return
+        }
+        // 选区未确定：悬停窗口时箭头提示可点选，否则十字
+        if phase == .selecting {
+            if selectionRect.isEmpty, hoveredWindow != nil {
+                addCursorRect(bounds, cursor: .arrow)
+            } else {
+                addCursorRect(bounds, cursor: .crosshair)
             }
-            // 未选工具：选区可调整
-            if !selectionLocked {
-                for (i, p) in handlePoints().enumerated() {
-                    let hot = NSRect(x: p.x - 8, y: p.y - 8, width: 16, height: 16)
-                    addCursorRect(hot, cursor: Self.handleCursor(index: i + 1))
-                }
-                // 选区内部：拖动中闭合手，否则张开手（钉钉 closedHand/openHand）
-                addCursorRect(selectionRect, cursor: adjust != nil ? .closedHand : .openHand)
-            }
+            return
+        }
+
+        // 标注阶段：光标按区域划分，且各区域互不重叠（AppKit 重叠区行为不确定）
+        if let tool = toolbarModel?.tool {
+            // 绘制工具激活：仅选区内是绘制光标，选区外恢复箭头
+            addOuterArrowRects(excluding: selectionRect)
+            addCursorRect(selectionRect, cursor: tool == .text ? .iBeam : .crosshair)
+            return
+        }
+        guard !selectionLocked else {
+            // 已落笔且未选工具：整屏箭头
             addCursorRect(bounds, cursor: .arrow)
             return
         }
-        // 选区未确定：悬停到窗口上时用箭头提示“可点选”，否则十字
-        if selectionRect.isEmpty, hoveredWindow != nil {
-            addCursorRect(bounds, cursor: .arrow)
-        } else {
-            addCursorRect(bounds, cursor: .crosshair)
+        // 可调整选区：外侧箭头 + 边框条带方向光标 + 内部手型
+        let ring = Self.handleThickness
+        addOuterArrowRects(excluding: selectionRect.insetBy(dx: -ring, dy: -ring))
+        for (rect, cursor) in edgeCursorAreas() {
+            addCursorRect(rect, cursor: cursor)
+        }
+        let interior = selectionRect.insetBy(dx: ring, dy: ring)
+        if interior.width > 0, interior.height > 0 {
+            addCursorRect(interior, cursor: adjust != nil ? .closedHand : .openHand)
         }
     }
+
+    /// 选区外的四条带（上/下/左/右），互不重叠，统一箭头
+    private func addOuterArrowRects(excluding rect: NSRect) {
+        guard !rect.isEmpty else {
+            addCursorRect(bounds, cursor: .arrow)
+            return
+        }
+        let clipped = rect.intersection(bounds)
+        if clipped.maxY < bounds.maxY {
+            addCursorRect(NSRect(x: bounds.minX, y: clipped.maxY,
+                                 width: bounds.width, height: bounds.maxY - clipped.maxY), cursor: .arrow)
+        }
+        if clipped.minY > bounds.minY {
+            addCursorRect(NSRect(x: bounds.minX, y: bounds.minY,
+                                 width: bounds.width, height: clipped.minY - bounds.minY), cursor: .arrow)
+        }
+        if clipped.minX > bounds.minX {
+            addCursorRect(NSRect(x: bounds.minX, y: clipped.minY,
+                                 width: clipped.minX - bounds.minX, height: clipped.height), cursor: .arrow)
+        }
+        if clipped.maxX < bounds.maxX {
+            addCursorRect(NSRect(x: clipped.maxX, y: clipped.minY,
+                                 width: bounds.maxX - clipped.maxX, height: clipped.height), cursor: .arrow)
+        }
+    }
+
+    /// 边框命中条带（对齐钉钉 dragArea: / cornerArea:）：四角方块 + 四边条带，
+    /// 整条边都能拖，不必精确点到圆点
+    private func edgeCursorAreas() -> [(NSRect, NSCursor)] {
+        let t = Self.handleThickness
+        let r = selectionRect
+        let outer = r.insetBy(dx: -t, dy: -t)
+        let corner = t * 2
+        var areas: [(NSRect, NSCursor)] = [
+            // 四角（对角光标）
+            (NSRect(x: outer.minX, y: outer.minY, width: corner, height: corner), .snipResizeNESW),          // 左下
+            (NSRect(x: outer.maxX - corner, y: outer.minY, width: corner, height: corner), .snipResizeNWSE), // 右下
+            (NSRect(x: outer.minX, y: outer.maxY - corner, width: corner, height: corner), .snipResizeNWSE), // 左上
+            (NSRect(x: outer.maxX - corner, y: outer.maxY - corner, width: corner, height: corner), .snipResizeNESW), // 右上
+        ]
+        // 四边（去掉角部，避免与角重叠）
+        let midW = outer.width - corner * 2
+        let midH = outer.height - corner * 2
+        if midW > 0 {
+            areas.append((NSRect(x: outer.minX + corner, y: outer.minY, width: midW, height: corner), .resizeUpDown))
+            areas.append((NSRect(x: outer.minX + corner, y: outer.maxY - corner, width: midW, height: corner), .resizeUpDown))
+        }
+        if midH > 0 {
+            areas.append((NSRect(x: outer.minX, y: outer.minY + corner, width: corner, height: midH), .resizeLeftRight))
+            areas.append((NSRect(x: outer.maxX - corner, y: outer.minY + corner, width: corner, height: midH), .resizeLeftRight))
+        }
+        return areas.map { ($0.0.intersection(bounds), $0.1) }.filter { !$0.0.isEmpty }
+    }
+
+    /// 边框条带厚度（光标热区与拖拽命中共用）
+    private static let handleThickness: CGFloat = 6
 
     /// 手柄序号 → 方向光标（与钉钉四种 dt_resize* 一一对应）
     /// 1=左下 2=下 3=右下 4=左 5=右 6=左上 7=上 8=右上
@@ -196,6 +260,16 @@ final class SelectionView: NSView {
         case 1, 8: .snipResizeNESW                    // dt_resizeNorthEastSouthWest
         default: .snipResizeNWSE                      // dt_resizeNorthWestSouthEast (3,6)
         }
+    }
+
+    /// 覆盖层退场时关掉工具条子窗口，避免面板残留在屏幕上
+    func teardownToolbar() {
+        if let panel = toolbarPanel {
+            window?.removeChildWindow(panel)
+            panel.orderOut(nil)
+        }
+        toolbarPanel = nil
+        toolbarHost = nil
     }
 
     /// 交互状态变化时刷新光标（钉钉 needsUpdateCursor 同款）
@@ -322,17 +396,37 @@ final class SelectionView: NSView {
                 self?.refreshCursor()
             }
 
+        // 工具条用独立子窗口承载（对齐钉钉 DTSCControlPanelWindow /
+        // DTSCScrollScreenshotToolbarWindowController）：
+        // 作为子视图时，覆盖层的十字光标区会盖住工具条，且干扰其命中测试，
+        // 导致选了绘制工具后点不到别的按钮。独立窗口有自己的光标与事件链，
+        // 且作为 childWindow 随覆盖层一起显示/关闭。
         let host = NSHostingView(rootView: OverlayToolbar(model: model))
-        addSubview(host)
+        let size = host.fittingSize
+        let panel = NSPanel(
+            contentRect: NSRect(origin: .zero, size: size),
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = true
+        panel.isReleasedWhenClosed = false
+        panel.becomesKeyOnlyIfNeeded = true
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        panel.contentView = host
         toolbarHost = host
+        toolbarPanel = panel
+        window?.addChildWindow(panel, ordered: .above)
         layoutToolbar()
         refreshCursor()
         needsDisplay = true
     }
 
-    /// 工具条跟随选区：优先下方，其次上方，再其次选区内部
+    /// 工具条跟随选区：优先下方，其次上方，再其次选区内部（视图坐标算好后转屏幕坐标）
     private func layoutToolbar() {
-        guard let host = toolbarHost else { return }
+        guard let host = toolbarHost, let panel = toolbarPanel, let window else { return }
         let size = host.fittingSize
         var origin = NSPoint(
             x: selectionRect.maxX - size.width,
@@ -345,7 +439,8 @@ final class SelectionView: NSView {
             origin.y = selectionRect.minY + 8
         }
         origin.x = max(bounds.minX + 8, min(origin.x, bounds.maxX - size.width - 8))
-        host.frame = NSRect(origin: origin, size: size)
+        let inWindow = convert(NSRect(origin: origin, size: size), to: nil)
+        panel.setFrame(window.convertToScreen(inWindow), display: true)
     }
 
     /// 标注阶段取色：色值入剪贴板 + 轻提示，不结束截取、不丢标注
@@ -577,12 +672,29 @@ final class SelectionView: NSView {
         ]
     }
 
+    /// 命中测试与光标区一致：四角方块优先，其次四边条带（整条边可拖）
     private func handleHit(at point: NSPoint) -> Int? {
-        for (i, p) in handlePoints().enumerated()
-        where abs(p.x - point.x) <= 8 && abs(p.y - point.y) <= 8 {
-            return i + 1
+        let t = Self.handleThickness
+        let outer = selectionRect.insetBy(dx: -t, dy: -t)
+        guard outer.contains(point) else { return nil }
+        let inner = selectionRect.insetBy(dx: t, dy: t)
+        if inner.contains(point) { return nil } // 内部 → 整体移动
+        let corner = t * 2
+        let nearLeft = point.x <= outer.minX + corner
+        let nearRight = point.x >= outer.maxX - corner
+        let nearBottom = point.y <= outer.minY + corner
+        let nearTop = point.y >= outer.maxY - corner
+        switch (nearLeft, nearRight, nearBottom, nearTop) {
+        case (true, _, true, _): return 1   // 左下
+        case (_, true, true, _): return 3   // 右下
+        case (true, _, _, true): return 6   // 左上
+        case (_, true, _, true): return 8   // 右上
+        case (_, _, true, _): return 2      // 下
+        case (_, _, _, true): return 7      // 上
+        case (true, _, _, _): return 4      // 左
+        case (_, true, _, _): return 5      // 右
+        default: return nil
         }
-        return nil
     }
 
     private func applyAdjust(_ a: (handle: Int, anchor: NSPoint, orig: NSRect), to point: NSPoint) {

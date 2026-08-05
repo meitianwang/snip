@@ -39,4 +39,10 @@ final class OverlayWindow: NSWindow {
     }
 
     override var canBecomeKey: Bool { true }
+
+    /// 关闭覆盖层时同步收起工具条子窗口
+    override func orderOut(_ sender: Any?) {
+        selectionView.teardownToolbar()
+        super.orderOut(sender)
+    }
 }
