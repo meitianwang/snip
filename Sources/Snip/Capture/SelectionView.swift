@@ -143,8 +143,64 @@ final class SelectionView: NSView {
         onColorPicked?(hex)
     }
 
+    /// 光标策略对齐钉钉 -[DTSCCaptureAreaView resetCursorRects]（反汇编所得映射）：
+    /// - 八方位拖拽区：dt_resizeNorthSouth / NorthWestSouthEast /
+    ///   NorthEastSouthWest / EastWest 四种双向箭头
+    /// - 选区内部：isDraging ? closedHandCursor : openHandCursor
+    /// - 选区未确定 / 绘制工具激活：crosshair
     override func resetCursorRects() {
-        addCursorRect(bounds, cursor: .crosshair)
+        discardCursorRects()
+        // 吸管取色：系统取色手感用十字
+        if toolbarModel?.isPickingColor == true {
+            addCursorRect(bounds, cursor: .crosshair)
+            return
+        }
+        // 窗口点选模式：箭头（钉钉悬停选窗同款）
+        if mode == .window {
+            addCursorRect(bounds, cursor: .arrow)
+            return
+        }
+        // 标注阶段
+        if phase == .annotating {
+            if let tool = toolbarModel?.tool {
+                // 绘制工具激活：文字用 I 形，其余十字
+                addCursorRect(bounds, cursor: tool == .text ? .iBeam : .crosshair)
+                return
+            }
+            // 未选工具：选区可调整
+            if !selectionLocked {
+                for (i, p) in handlePoints().enumerated() {
+                    let hot = NSRect(x: p.x - 8, y: p.y - 8, width: 16, height: 16)
+                    addCursorRect(hot, cursor: Self.handleCursor(index: i + 1))
+                }
+                // 选区内部：拖动中闭合手，否则张开手（钉钉 closedHand/openHand）
+                addCursorRect(selectionRect, cursor: adjust != nil ? .closedHand : .openHand)
+            }
+            addCursorRect(bounds, cursor: .arrow)
+            return
+        }
+        // 选区未确定：悬停到窗口上时用箭头提示“可点选”，否则十字
+        if selectionRect.isEmpty, hoveredWindow != nil {
+            addCursorRect(bounds, cursor: .arrow)
+        } else {
+            addCursorRect(bounds, cursor: .crosshair)
+        }
+    }
+
+    /// 手柄序号 → 方向光标（与钉钉四种 dt_resize* 一一对应）
+    /// 1=左下 2=下 3=右下 4=左 5=右 6=左上 7=上 8=右上
+    private static func handleCursor(index: Int) -> NSCursor {
+        switch index {
+        case 2, 7: .resizeUpDown                      // dt_resizeNorthSouth
+        case 4, 5: .resizeLeftRight                   // dt_resizeEastWest
+        case 1, 8: .snipResizeNESW                    // dt_resizeNorthEastSouthWest
+        default: .snipResizeNWSE                      // dt_resizeNorthWestSouthEast (3,6)
+        }
+    }
+
+    /// 交互状态变化时刷新光标（钉钉 needsUpdateCursor 同款）
+    private func refreshCursor() {
+        window?.invalidateCursorRects(for: self)
     }
 
     override func updateTrackingAreas() {
@@ -165,7 +221,9 @@ final class SelectionView: NSView {
             hoveredWindow = pickableWindows.first { $0.rect.contains(mouseLocation) }
         } else if phase == .selecting, startPoint == nil, selectionRect.isEmpty {
             // 钉钉式：区域模式下悬停自动高亮窗口，单击即选中该区域
+            let before = hoveredWindow?.rect
             hoveredWindow = pickableWindows.first { $0.rect.contains(mouseLocation) }
+            if before != hoveredWindow?.rect { refreshCursor() }
         }
         needsDisplay = true
     }
@@ -259,12 +317,16 @@ final class SelectionView: NSView {
         // 工具/取色模式切换时重绘（如放大镜显隐）
         toolbarCancellable = model.objectWillChange
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in self?.needsDisplay = true }
+            .sink { [weak self] _ in
+                self?.needsDisplay = true
+                self?.refreshCursor()
+            }
 
         let host = NSHostingView(rootView: OverlayToolbar(model: model))
         addSubview(host)
         toolbarHost = host
         layoutToolbar()
+        refreshCursor()
         needsDisplay = true
     }
 
@@ -360,10 +422,12 @@ final class SelectionView: NSView {
             if !selectionLocked {
                 if let handle = handleHit(at: point) {
                     adjust = (handle, point, selectionRect)
+                    refreshCursor()
                     return
                 }
                 if selectionRect.contains(point) {
                     adjust = (0, point, selectionRect)
+                    refreshCursor()
                     return
                 }
             }
@@ -431,6 +495,7 @@ final class SelectionView: NSView {
             adjust = nil
             selectionRect = selectionRect.integral
             layoutToolbar()
+            refreshCursor()
             needsDisplay = true
             return
         }

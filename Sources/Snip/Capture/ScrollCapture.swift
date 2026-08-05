@@ -258,8 +258,15 @@ final class ScrollCaptureSession: ObservableObject {
     }
 }
 
-/// 长截图选区边框：强调色描边 + 四角提示
+/// 长截图选区边框：强调色描边 + 四角提示。
+/// 光标对齐钉钉（grabbing_cursor / onScrollScreenshotCaptureAreaGrabStatusDidChange:）：
+/// 区域内提示"可抓取滚动"的手型。边框浮层穿透鼠标，故用 NSCursor.set 主动设置。
 private final class RegionFrameView: NSView {
+    override func resetCursorRects() {
+        discardCursorRects()
+        addCursorRect(bounds, cursor: .openHand)
+    }
+
     override func draw(_ dirtyRect: NSRect) {
         guard let ctx = NSGraphicsContext.current?.cgContext else { return }
         let accent = NSColor.controlAccentColor.usingColorSpace(.sRGB) ?? .systemBlue
